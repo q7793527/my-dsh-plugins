@@ -28,8 +28,14 @@
 # ⚠️ 本文件由 husky 的 .husky/_/h 以 `sh -e` 执行（shebang 被忽略、errexit 生效），
 # 因此只使用 POSIX sh 语法，且所有允许失败的命令都显式 `|| true` 兜底。
 
-status_file=$(mktemp -t lint-staged-status)
-out_file=$(mktemp -t lint-staged-out)
+# ⚠️ 不用 mktemp（实测缺陷）：Git for Windows 自带 coreutils 的 mktemp 不接受裸 `-t NAME`
+# （模板必须含 ≥6 个 X），报 `mktemp: too few X's in template ‘lint-staged-status’`。本文件由
+# husky 以 `sh -e` 执行，errexit 会让脚本在**创建临时文件**这一步就终止——三层门禁逻辑一层
+# 都跑不到，pre-commit 静默失效。改用 git 目录 + `$$` 后缀：POSIX 通用、同目录不泄漏到工作区。
+git_dir=$(git rev-parse --git-path . 2>/dev/null) || git_dir=".git"
+git_dir="${git_dir%/}"
+status_file="$git_dir/lint-staged-status.$$"
+out_file="$git_dir/lint-staged-out.$$"
 cleanup_tmp() { rm -f "$status_file" "$out_file"; }
 trap cleanup_tmp EXIT
 
@@ -69,7 +75,7 @@ run_lint_staged() {
 #   *.{json,md,yml,yaml} → prettier --write
 # 注意 js/mjs 在原配置里**既跑 eslint 也跑 prettier**，两边都不能漏。
 degraded_check() {
-  list=$(mktemp -t lint-staged-files)
+  list="$git_dir/lint-staged-files.$$"
   git -c core.quotepath=false diff --cached --name-only --diff-filter=ACMR > "$list" 2>/dev/null || true
   grep -E '\.(js|mjs)$' "$list" > "$list.eslint" 2>/dev/null || true
   grep -E '\.(js|mjs|ts|tsx|json|md|mdx|yml|yaml)$' "$list" > "$list.fmt" 2>/dev/null || true
