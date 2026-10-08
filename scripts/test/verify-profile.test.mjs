@@ -10,19 +10,11 @@
  * 外加脚本接线防漂移（lib 改了必须真的被 verify-real-profile.mjs 调用）。
  */
 import { describe, it, expect, afterAll } from 'vitest'
-import {
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  readlinkSync,
-  realpathSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs'
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { dirSync } from 'tmp'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { symlinkDir } from '../lib/symlink-dir.mjs'
 import {
   bootFailureExcerpt,
   decideBootOutcome,
@@ -180,7 +172,7 @@ describe('linkNodeModules', () => {
     const forkAddon = makeAddon(base, 'dsh-demo', 'fork/dsh-demo')
     const realNode = join(base, 'real-node-modules')
     mkdirSync(realNode, { recursive: true })
-    symlinkSync(mainWorkspace, join(realNode, 'dsh-demo')) // 生产 profile 的 link: 安装
+    symlinkDir(mainWorkspace, join(realNode, 'dsh-demo')) // 生产 profile 的 link: 安装
     const simNode = join(base, 'sim-node-modules')
 
     const result = linkNodeModules({
@@ -204,7 +196,7 @@ describe('linkNodeModules', () => {
     mkdirSync(realNode, { recursive: true })
     const simNode = join(base, 'sim-node-modules')
     mkdirSync(simNode, { recursive: true })
-    symlinkSync(wrong, join(simNode, 'dsh-demo')) // 错误的既有软链
+    symlinkDir(wrong, join(simNode, 'dsh-demo')) // 错误的既有软链
 
     const result = linkNodeModules({ simNode, realNode, addons: [{ dir: forkAddon, name: 'dsh-demo' }] })
 
@@ -217,7 +209,7 @@ describe('linkNodeModules', () => {
     const ghost = join(base, 'ghost-target')
     const realNode = join(base, 'real-node-modules')
     mkdirSync(realNode, { recursive: true })
-    symlinkSync(ghost, join(realNode, 'dsh-demo')) // 指向不存在路径
+    symlinkDir(ghost, join(realNode, 'dsh-demo')) // 指向不存在路径
     const forkAddon = makeAddon(base, 'dsh-demo', 'fork/dsh-demo')
     const simNode = join(base, 'sim-node-modules')
 
@@ -314,7 +306,7 @@ describe('issue #294 external 缺包演练', () => {
     expect(checkOmittedAbsent({ simNode, omitted: ['dsh-md-render'] }).ok).toBe(true)
 
     // 接线写错（漏传 omit）→ 该条目被复用进 simNode：必须被抓住，不允许假通过
-    symlinkSync(join(realNode, 'dsh-md-render'), join(simNode, 'dsh-md-render'))
+    symlinkDir(join(realNode, 'dsh-md-render'), join(simNode, 'dsh-md-render'))
     const leaked = checkOmittedAbsent({ simNode, omitted: ['dsh-md-render'] })
     expect(leaked.ok).toBe(false)
     expect(leaked.leaked.map((item) => item.entry)).toEqual(['dsh-md-render'])
@@ -371,7 +363,7 @@ describe('checkAddonResolution', () => {
     const forkAddon = makeAddon(base, 'dsh-demo', 'fork/dsh-demo')
     const simNode = join(base, 'sim-node-modules')
     mkdirSync(simNode, { recursive: true })
-    symlinkSync(mainWorkspace, join(simNode, 'dsh-demo'))
+    symlinkDir(mainWorkspace, join(simNode, 'dsh-demo'))
 
     const result = checkAddonResolution({ simNode, addons: [{ dir: forkAddon, name: 'dsh-demo' }] })
     expect(result.ok).toBe(false)
@@ -385,7 +377,7 @@ describe('checkAddonResolution', () => {
     const forkAddon = makeAddon(base, 'dsh-demo', 'fork/dsh-demo')
     const simNode = join(base, 'sim-node-modules')
     mkdirSync(simNode, { recursive: true })
-    symlinkSync(forkAddon, join(simNode, 'dsh-demo'))
+    symlinkDir(forkAddon, join(simNode, 'dsh-demo'))
     expect(checkAddonResolution({ simNode, addons: [{ dir: forkAddon, name: 'dsh-demo' }] }).ok).toBe(true)
   })
 
@@ -394,10 +386,10 @@ describe('checkAddonResolution', () => {
     // 只为创建 addon 目录（副作用），绑定本身不用（issue #315：去掉未使用绑定，保留调用）
     makeAddon(base, 'dsh-demo', 'fork/dsh-demo')
     const alias = join(base, 'tmp-alias')
-    symlinkSync(base, alias, 'dir')
+    symlinkDir(base, alias)
     const simNode = join(base, 'sim-node-modules')
     mkdirSync(simNode, { recursive: true })
-    symlinkSync(join(alias, 'fork/dsh-demo'), join(simNode, 'dsh-demo'))
+    symlinkDir(join(alias, 'fork/dsh-demo'), join(simNode, 'dsh-demo'))
 
     const result = checkAddonResolution({ simNode, addons: [{ dir: join(alias, 'fork/dsh-demo'), name: 'dsh-demo' }] })
     expect(result.ok).toBe(true)
@@ -408,7 +400,7 @@ describe('checkAddonResolution', () => {
     const forkAddon = makeAddon(base, 'dsh-demo', 'fork/dsh-demo')
     const simNode = join(base, 'sim-node-modules')
     mkdirSync(simNode, { recursive: true })
-    symlinkSync(join(base, 'missing'), join(simNode, 'dsh-demo'))
+    symlinkDir(join(base, 'missing'), join(simNode, 'dsh-demo'))
 
     const result = checkAddonResolution({ simNode, addons: [{ dir: forkAddon, name: 'dsh-demo' }] })
     expect(result.entries[0].actual).toBeNull()
@@ -482,7 +474,7 @@ describe('workspace 存储预置', () => {
     const base = tempDir()
     const { name: target } = dirSync({ dir: base, unsafeCleanup: true, prefix: 'ws-' })
     const alias = join(base, 'tmp-alias')
-    symlinkSync(base, alias, 'dir')
+    symlinkDir(base, alias)
     const simHome = join(base, 'sim-home')
 
     const result = writeWorkspaceStorage({

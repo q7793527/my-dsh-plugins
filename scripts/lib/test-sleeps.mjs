@@ -138,6 +138,10 @@ export function findWaits(source, parse) {
   return found
 }
 
+/** 基线 key 的分隔符归一（issue #355）：Windows `relative()` 给反斜杠、基线存正斜杠，
+ *  不归一会让**存量全部**被判成「新增固定等待」（本机实测 68 处误报）。key 统一用正斜杠。 */
+const normalizeKeyPath = (p) => String(p).replace(/\\/g, '/')
+
 /** 基线条目：文件 + 行内容指纹（行号会漂移，指纹不会）。 */
 export function fingerprint(relativePath, text) {
   let hash = 0
@@ -145,7 +149,7 @@ export function fingerprint(relativePath, text) {
   for (let i = 0; i < normalized.length; i += 1) {
     hash = (hash * 31 + normalized.charCodeAt(i)) | 0
   }
-  return `${relativePath}::${(hash >>> 0).toString(16)}`
+  return `${normalizeKeyPath(relativePath)}::${(hash >>> 0).toString(16)}`
 }
 
 /**
@@ -155,10 +159,15 @@ export function fingerprint(relativePath, text) {
  */
 export function auditWaits(entries, baseline = []) {
   const remaining = [...baseline]
+  // 匹配侧两端都归一（issue #355）：条目来自 fingerprint（已归一），基线可能是在 Windows 上
+  // 写入过的反斜杠 key——按归一化 key 消费，stale 报告仍回显**原样**条目便于定位。
+  const remainingKeys = remaining.map(normalizeKeyPath)
   const takeFromBaseline = (id) => {
-    const idx = remaining.indexOf(id)
+    const key = normalizeKeyPath(id)
+    const idx = remainingKeys.indexOf(key)
     if (idx === -1) return false
     remaining.splice(idx, 1)
+    remainingKeys.splice(idx, 1)
     return true
   }
   const violations = []

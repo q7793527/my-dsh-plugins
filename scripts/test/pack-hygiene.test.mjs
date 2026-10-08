@@ -10,7 +10,7 @@
  *   ③ pack 输出解析失败 / npm pack 失败 / 找不到插件 → 必须失败，**绝不静默变绿**（fail-closed）。
  */
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { dirSync } from 'tmp'
@@ -417,11 +417,16 @@ describe('CLI 端到端（真实 npm pack）', () => {
   })
 })
 
-describe('真实仓库回归（19 个插件：0 问题）', () => {
+describe('真实仓库回归（全量插件：0 问题）', () => {
   it('全仓库通过，且报出实测耗时', () => {
+    // 通过数与 plugins/ 目录实时对齐（硬编码 19 在新增插件后会假红；扫描口径由门禁本身定义）
+    const pluginCount = readdirSync(join(repoRoot, 'plugins'), { withFileTypes: true }).filter((e) =>
+      e.isDirectory(),
+    ).length
+    expect(pluginCount).toBeGreaterThan(0)
     const cli = runCli(['--root', repoRoot])
     expect(cli.status).toBe(0)
-    expect(cli.stdout).toContain('✅ 通过：19/19')
+    expect(cli.stdout).toContain(`✅ 通过：${pluginCount}/${pluginCount}`)
     expect(cli.stdout).toMatch(/实测耗时：pack 合计 \d+ms/)
   }, 60_000)
 })

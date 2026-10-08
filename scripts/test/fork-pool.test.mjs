@@ -11,10 +11,11 @@
  *     全部在临时目录里构造，不依赖 GitHub 网络（CI 里也必须能跑）。
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirSync } from 'tmp'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { symlinkDir } from '../lib/symlink-dir.mjs'
 import { describe, expect, it } from 'vitest'
 import {
   branchNameFor,
@@ -507,20 +508,24 @@ describe('CLI 端到端（离线）', () => {
   it('exclude 位置已被软链占据 → 拒绝写入，受害者文件一字不改', { timeout: 60_000 }, () => {
     const { name: fake } = dirSync({ unsafeCleanup: true, prefix: 'fork-pool-test-' })
     try {
-      const victim = join(fake, 'victim.txt')
+      const victim = join(fake, 'victim')
       const original = 'keep-me\n'
-      writeFileSync(victim, original)
-      // 攻击者视角：把 fork 的 .git/info/exclude 预置成指向受害者的软链
+      mkdirSync(victim, { recursive: true })
+      writeFileSync(join(victim, 'payload.txt'), original)
+      // 攻击者视角：把 fork 的 .git/info/exclude 预置成指向受害者的软链。
+      // 受害者用**目录**形态（issue #355）：win32 无特权建不了指向文件的软链（EPERM），
+      // junction 是目录别名、两平台语义一致；被钉住的回归语义不变——
+      // 「exclude 位置被非普通文件占据 → 拒绝写入，占位目标一字不改」。
       const forkDir = join(fake, 'gh-fork-test8')
       mkdirSync(join(forkDir, '.git', 'info'), { recursive: true })
-      symlinkSync(victim, join(forkDir, '.git', 'info', 'exclude'))
+      symlinkDir(victim, join(forkDir, '.git', 'info', 'exclude'))
 
       // fork 目录已存在 → create 先拒绝（不依赖本修复）；这里的价值是钉住
       // "现有路径不是普通文件时绝不写入"，配合下面的源码形态断言构成回归网。
       const { code, out } = runCli(['create', 'test8', '--dir', forkDir], { tmpRoot: fake })
       expect(code).toBe(1)
       expect(out).toContain('目录已存在')
-      expect(readFileSync(victim, 'utf8')).toBe(original)
+      expect(readFileSync(join(victim, 'payload.txt'), 'utf8')).toBe(original)
       expect(lstatSync(join(forkDir, '.git', 'info', 'exclude')).isSymbolicLink()).toBe(true)
     } finally {
       rmSync(fake, { recursive: true, force: true })

@@ -40,6 +40,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { randomUUID } from 'node:crypto'
+import { symlinkDir } from './symlink-dir.mjs'
 import { basename, dirname, join, resolve } from 'node:path'
 
 // ── 插件条目与软链计划 ─────────────────────────────────────────────────────
@@ -198,7 +199,7 @@ export function linkNodeModules({ simNode, realNode, addons, omit = [] }) {
   const addonEntries = new Set(plan.addonLinks.map((link) => link.entry))
   mkdirSync(simNode, { recursive: true })
 
-  for (const entry of plan.reuse) symlinkSync(join(realNode, entry), join(simNode, entry))
+  for (const entry of plan.reuse) symlinkDir(join(realNode, entry), join(simNode, entry))
 
   const omitted = [...plan.omitted]
   for (const scope of plan.expand) {
@@ -210,7 +211,7 @@ export function linkNodeModules({ simNode, realNode, addons, omit = [] }) {
         omitted.push(entry) // issue #294：scope 展开的子条目同样受 omit 约束
         continue
       }
-      symlinkSync(join(realNode, scope, child), join(simNode, entry))
+      symlinkDir(join(realNode, scope, child), join(simNode, entry))
     }
   }
 
@@ -224,7 +225,7 @@ export function linkNodeModules({ simNode, realNode, addons, omit = [] }) {
       removeEntry(target)
     }
     mkdirSync(dirname(target), { recursive: true })
-    symlinkSync(dir, target)
+    symlinkDir(dir, target)
     linked.push(entry)
   }
   // 被 addon 覆盖的真实 profile 条目原目标：脚本据此打印"原来指向主工作区"的证据

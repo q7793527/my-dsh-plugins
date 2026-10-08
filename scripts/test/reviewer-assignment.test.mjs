@@ -22,6 +22,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolveReviewers, describeAssignment } from '../lib/reviewer-assignment.mjs'
+import { BASH, HAS_BASH, pathWithPrefix } from './bash-runner.mjs'
 
 const readWorkflow = (name) => readFileSync(new URL(`../../.github/workflows/${name}`, import.meta.url), 'utf8')
 
@@ -76,11 +77,14 @@ function runApproveStep(mode) {
   const scriptPath = join(dir, 'step.sh')
   writeFileSync(scriptPath, extractRunBlock(readWorkflow(AUTO_MERGE_WORKFLOW), 'Approve minor and patch updates'))
 
-  const result = spawnSync('bash', ['-e', scriptPath], {
+  // win32：裸 `spawnSync('bash')` 落到 WSL bash，`D:\x\step.sh` 参数与 `dir:PATH` 拼接
+  // （POSIX `:` 分隔）都解析不了 → 三用例全红。改走 Git Bash（MSYS 自动转换 win 路径/PATH）；
+  // 本机没有可用 bash 时显式 skipped（vitest 计入 skipped，不静默假绿）。
+  const result = spawnSync(BASH, ['-e', scriptPath], {
     encoding: 'utf8',
     env: {
       ...process.env,
-      PATH: `${dir}:${process.env.PATH}`,
+      PATH: pathWithPrefix(dir),
       PR_URL: 'https://example.invalid/pull/1',
       GH_STUB_MODE: mode,
     },
@@ -172,14 +176,14 @@ describe('仓库不变量：workflow 不得回退成必然失败的写法（issu
 })
 
 describe('dependabot Auto-Merge：approve 失败时的降级语义（实测真实 run 段）', () => {
-  it('approve 成功 → step 退出码 0', () => {
+  it.skipIf(!HAS_BASH)('approve 成功 → step 退出码 0', () => {
     const { status, stdout } = runApproveStep('success')
 
     expect(stdout).toContain('已自动 approve')
     expect(status).toBe(0)
   })
 
-  it('无 approve 权限（平台策略）→ 打 warning 且 step 退出码仍为 0（不再假红灯）', () => {
+  it.skipIf(!HAS_BASH)('无 approve 权限（平台策略）→ 打 warning 且 step 退出码仍为 0（不再假红灯）', () => {
     const { status, stdout } = runApproveStep('not-permitted')
 
     expect(stdout).toContain('::warning')
@@ -188,7 +192,7 @@ describe('dependabot Auto-Merge：approve 失败时的降级语义（实测真�
     expect(status).toBe(0)
   })
 
-  it('其它错误（非权限原因）→ 仍以非 0 退出并打 error（不是静默忽略一切错误）', () => {
+  it.skipIf(!HAS_BASH)('其它错误（非权限原因）→ 仍以非 0 退出并打 error（不是静默忽略一切错误）', () => {
     const { status, stdout } = runApproveStep('other-error')
 
     expect(stdout).toContain('::error')

@@ -15,6 +15,7 @@ import { chmodSync, mkdirSync, rmSync, statSync, symlinkSync, writeFileSync } fr
 import { dirname, join } from 'node:path'
 import { dirSync } from 'tmp'
 import { readFailureReason, runCheck } from '../check-links.mjs'
+import { symlinkDir } from '../lib/symlink-dir.mjs'
 
 /**
  * 读取探针：记录 readFileSync 的调用目标。
@@ -124,7 +125,9 @@ describe('#327 字节上限：超大文件在读之前被跳过', () => {
 describe('#327 读取失败按 errno 分类', () => {
   it('断链符号链接归入「文件不存在」而不是静默 continue', () => {
     const root = makeRepo()
-    symlinkSync(join(root, 'docs/deleted.md'), join(root, 'docs/dangling.md'))
+    // win32 无特权 symlinkSync 必 EPERM → junction（目录联接）：悬空可建、
+    // 打开时同样 ENOENT，errno 分类的回归语义不变。
+    symlinkDir(join(root, 'docs/deleted.md'), join(root, 'docs/dangling.md'))
 
     const result = check(root)
     expect([...result.unreadable.keys()]).toContain('文件不存在')
@@ -139,13 +142,19 @@ describe('#327 读取失败按 errno 分类', () => {
     expect([...result.unreadable.keys()]).toContain('非普通文件')
   })
 
-  it.skipIf(process.getuid?.() === 0)('不可读文件归入「权限不足」而不是静默 continue', () => {
-    const root = makeRepo({ 'docs/locked.md': '# 锁住\n' })
-    chmodSync(join(root, 'docs/locked.md'), 0o000)
+  // win32 也跳过（与 /dev/null 用例同列显式）：本机会话是管理员，Windows 的权限位对
+  // 提权进程不生效——chmod 0o000 后仍可读，无法在 win 上复现 EACCES。
+  // 「errno → 权限不足」映射由下面的 readFailureReason 纯函数用例完整钉住，不丢回归网。
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    '不可读文件归入「权限不足」而不是静默 continue',
+    () => {
+      const root = makeRepo({ 'docs/locked.md': '# 锁住\n' })
+      chmodSync(join(root, 'docs/locked.md'), 0o000)
 
-    const result = check(root)
-    expect([...result.unreadable.keys()]).toContain('权限不足')
-  })
+      const result = check(root)
+      expect([...result.unreadable.keys()]).toContain('权限不足')
+    },
+  )
 
   it('readFailureReason 的 errno → 文案映射', () => {
     const err = (code) => Object.assign(new Error(code), { code })

@@ -38,11 +38,12 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { auditPlugin, parsePackJson } from './lib/pack-hygiene.mjs'
+// issue #355：npm 的跨平台启动解析——win32 上 `spawn('npm.cmd')` 无 shell 是 EINVAL（Node 24），
+// 统一走「node 直跑 npm-cli.js」，与 CI 语义一致。
+import { resolveToolInvocation } from './lib/local-toolchain.mjs'
 import { mapWithConcurrency } from './lib/release-concurrency.mjs'
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-/** npm 在 Windows 上是 .cmd 包装（本仓库 CI 为 ubuntu/macOS，保守兜底）。 */
-const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 /** pack 并发度：pack 是独立子进程（无共享临时目录），实测 6 路 19 插件 ~1.5s（串行 ~7s）。 */
 const PACK_CONCURRENCY = 6
 
@@ -55,8 +56,13 @@ function runNpmPack(dir, { ignoreScripts = true } = {}) {
   // 生命周期脚本"是不可接受的副作用面。若未来引入 prepack，本门禁的 required/target
   // 断言会因产物缺失而 fail-closed（宁可误报，绝不漏报）。
   if (ignoreScripts) args.push('--ignore-scripts')
+  const inv = resolveToolInvocation('npm', { projectRoot: dir })
   return new Promise((resolvePromise) => {
-    const child = spawn(NPM, args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(inv.file, [...inv.prefixArgs, ...inv.args, ...args], {
+      cwd: dir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: inv.shell === true,
+    })
     let out = ''
     let err = ''
     child.stdout.on('data', (chunk) => {

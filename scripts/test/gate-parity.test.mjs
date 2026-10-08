@@ -39,7 +39,10 @@ import {
 } from '../lib/gate-registry.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const workflowText = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8')
+// 归一化行尾（issue #355）：win32 checkout（autocrlf=true）的 ci.yml 是 CRLF，
+// `replace(/^ {8}continue-on-error: true\n/gm)` 这类「按行删除」夹具匹配不到 `\r\n`
+// → 「去掉容错」用例实际什么都没删、报出 0 个缺口（Linux CI 是 LF 不受影响）。
+const workflowText = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8').replace(/\r\n/g, '\n')
 
 /** 真实本地清单只取一次（子进程开销约 100ms）。 */
 let localChecks

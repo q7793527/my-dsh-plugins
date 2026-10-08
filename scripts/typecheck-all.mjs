@@ -27,8 +27,11 @@
 import { spawn } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
 import { availableParallelism } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// issue #355：tsc 的跨平台启动解析——`node_modules/.bin/tsc` 在 win32 是 POSIX shell 脚本
+// （existsSync 命中但不可 exec，实测 ENOENT ×18），统一改跑 typescript 包内的 JS 入口。
+import { resolveToolInvocation } from './lib/local-toolchain.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -58,11 +61,10 @@ export function listTypecheckTargets(pluginsDir) {
   return targets
 }
 
-/** tsc 可执行入口：优先本地 bin（省 npx 解析），缺失回退 npx --no-install（零联网）。 */
-function tscCommand() {
-  const local = join(root, 'node_modules', '.bin', 'tsc')
-  if (existsSync(local)) return { cmd: local, prefix: [] }
-  return { cmd: 'npx', prefix: ['--no-install', 'tsc'] }
+/** tsc 可执行入口：node 直跑 `typescript/bin/tsc`（JS 入口，任何平台可 exec）；缺失回退 npx --no-install。 */
+export function tscCommand(projectRoot = root) {
+  const inv = resolveToolInvocation('tsc', { projectRoot })
+  return { cmd: inv.file, prefix: [...inv.prefixArgs, ...inv.args], shell: inv.shell === true }
 }
 
 function runOne(target, tsc) {
@@ -71,6 +73,7 @@ function runOne(target, tsc) {
     const child = spawn(tsc.cmd, [...tsc.prefix, '--noEmit', '-p', target.project], {
       cwd: target.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
+      shell: tsc.shell === true,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', npm_config_update_notifier: 'false' },
     })
     let out = ''
@@ -83,7 +86,7 @@ function runOne(target, tsc) {
   })
 }
 
-async function runPool(targets, limit, tsc) {
+async function runPool(targets, limit, tsc, onDone) {
   const results = []
   let cursor = 0
   const worker = async () => {
@@ -93,8 +96,8 @@ async function runPool(targets, limit, tsc) {
       if (index >= targets.length) return
       const result = await runOne(targets[index], tsc)
       results.push(result)
-      const mark = result.ok ? '✓' : '✗'
-      console.log(`  ${mark} ${result.label} ${(result.ms / 1000).toFixed(1)}s`)
+      // 进度行由调用方决定（--json 模式必须输出纯 JSON，进度行会污染机器可读输出）
+      if (onDone) onDone(result)
     }
   }
   await Promise.all(Array.from({ length: Math.min(limit, targets.length) }, worker))
@@ -113,9 +116,18 @@ async function main() {
   const tsc = tscCommand()
   const started = Date.now()
   if (!asJson) {
-    console.log(`[typecheck-all] ${targets.length} 个类型检查任务（并发 ${concurrency}，tsc: ${tsc.cmd}）`)
+    console.log(
+      `[typecheck-all] ${targets.length} 个类型检查任务（并发 ${concurrency}，tsc: ${[tsc.cmd, ...tsc.prefix].join(' ')}）`,
+    )
   }
-  const results = await runPool(targets, concurrency, tsc)
+  const results = await runPool(
+    targets,
+    concurrency,
+    tsc,
+    asJson
+      ? null
+      : (result) => console.log(`  ${result.ok ? '✓' : '✗'} ${result.label} ${(result.ms / 1000).toFixed(1)}s`),
+  )
   const failed = results.filter((r) => !r.ok)
   const totalMs = Date.now() - started
 
@@ -130,7 +142,8 @@ async function main() {
       console.error(f.out.trim().split('\n').slice(-40).join('\n'))
     }
     console.error(
-      '\n复现单项：cd <插件目录> && ../../node_modules/.bin/tsc --noEmit -p ' + (failed[0]?.project ?? 'tsconfig.json'),
+      '\n复现单项：cd <插件目录> && node ../../node_modules/typescript/bin/tsc --noEmit -p ' +
+        (failed[0]?.project ?? 'tsconfig.json'),
     )
   }
   process.exit(failed.length === 0 ? 0 : 1)
@@ -141,4 +154,7 @@ function shapeOf(r) {
   return { label: r.label, ok: r.ok, ms: r.ms }
 }
 
-main()
+// 直跑（`node scripts/typecheck-all.mjs`）才执行；被 import 时保持纯模块（供单测复用）。
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main()
+}

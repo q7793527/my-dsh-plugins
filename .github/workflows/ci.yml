@@ -72,6 +72,7 @@ jobs:
           - dsh-my-skill-manager
           - dsh-plugin-dev-mode
           - dsh-task-reliability
+          - dsh-toonflow-media
           - dsh-ts-example
           - dsh-my-remote
           - dsh-session-title-gen

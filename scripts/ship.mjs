@@ -199,7 +199,15 @@ if (options.pr && result.verify?.ok && result.push?.ok) {
     options.base,
   ]
   if (options.draft) args.push('--draft')
-  const prRes = spawnSync(process.env.GHOPS_BIN ?? 'ghops', args, { cwd: root, encoding: 'utf8' })
+  const ghopsBin = process.env.GHOPS_BIN ?? 'ghops'
+  // win32：GHOPS_BIN 常是测试注入的**无扩展名 node 脚本**（离线沙箱的 ghops 桩），
+  // Windows 不认 shebang/无扩展名脚本（spawn 直接 EINVAL/ENOENT）→ 交给 node 执行。
+  // Linux/macOS 与一切带 .exe/.cmd 后缀的真实二进制走原路径，生产行为不变（issue #355）。
+  const useNodeShim = process.platform === 'win32' && ghopsBin !== 'ghops' && !/\.(exe|cmd|bat)$/i.test(ghopsBin)
+  const prRes = spawnSync(useNodeShim ? process.execPath : ghopsBin, useNodeShim ? [ghopsBin, ...args] : args, {
+    cwd: root,
+    encoding: 'utf8',
+  })
   const prOut = `${prRes.stdout ?? ''}${prRes.stderr ?? ''}`.trim()
   result.pr = prRes.error
     ? { ok: false, detail: `找不到 ghops（${prRes.error.code}）：手工执行 ghops pr create ...` }

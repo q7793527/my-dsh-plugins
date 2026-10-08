@@ -14,6 +14,7 @@ import { writeFileSync, mkdirSync, rmSync, readFileSync, readdirSync } from 'nod
 import { dirSync } from 'tmp'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { BASH, HAS_BASH } from './bash-runner.mjs'
 import {
   extractDshRequires,
   findUndeclaredPeers,
@@ -621,8 +622,16 @@ describe('workflow 插件清单一致性与输入语义（#204 防漂移）', ()
 
   const wfFile = '.github/workflows/release-auto.yml'
 
+  /**
+   * 读仓库内文本文件并归一化行尾（issue #355）：win32 checkout（core.autocrlf=true）
+   * 得到的 workflow 是 CRLF，`/run: \|$/` 这类行尾锚点匹配不到 `\r` → 提取恒 null、
+   * 9 个用例连锁假红；Linux CI 是 LF 不受影响。行尾不属于 YAML/shell 语义，归一后
+   * 解析结果与 CI 一致。
+   */
+  const readWf = (path) => readFileSync(path, 'utf8').replace(/\r\n/g, '\n')
+
   const optionsAfter = (file, startRe, endRe) => {
-    const yml = readFileSync(join(repoRoot, file), 'utf8')
+    const yml = readWf(join(repoRoot, file))
     const section = yml.split(startRe)[1]?.split(endRe)[0] ?? ''
     return [...section.matchAll(/^ +- (.+)$/gm)].map((m) => m[1].trim()).sort()
   }
@@ -633,7 +642,7 @@ describe('workflow 插件清单一致性与输入语义（#204 防漂移）', ()
    * workflow 漂移，等于没测。
    */
   const runScriptOf = (file, stepId) => {
-    const lines = readFileSync(join(repoRoot, file), 'utf8').split('\n')
+    const lines = readWf(join(repoRoot, file)).split('\n')
     const idIdx = lines.findIndex((l) => l.trim() === `id: ${stepId}`)
     if (idIdx < 0) return null
     const runIdx = lines.findIndex((l, i) => i > idIdx && /^\s+run: \|$/.test(l))
@@ -650,7 +659,7 @@ describe('workflow 插件清单一致性与输入语义（#204 防漂移）', ()
 
   /** 抽出 workflow 里所有 `run: |` 脚本（用于「run 内不得插值」的整体断言）。 */
   const allRunScripts = (file) => {
-    const lines = readFileSync(join(repoRoot, file), 'utf8').split('\n')
+    const lines = readWf(join(repoRoot, file)).split('\n')
     const scripts = []
     for (let i = 0; i < lines.length; i += 1) {
       if (!/^\s+run: \|$/.test(lines[i])) continue
@@ -681,7 +690,9 @@ describe('workflow 插件清单一致性与输入语义（#204 防漂移）', ()
     const outPath = join(dir, 'github_output')
     writeFileSync(scriptPath, script)
     writeFileSync(outPath, '')
-    const res = spawnSync('bash', [scriptPath], {
+    // win32：裸 `bash` 是 WSL bash，吃不了 `D:\x\resolve-plugins.sh` → Git Bash（MSYS 路径转换）
+    if (!HAS_BASH) throw new Error('本地跳过：未找到可用的 Git Bash（无法实测 workflow run 段）')
+    const res = spawnSync(BASH, [scriptPath], {
       cwd: repoRoot,
       encoding: 'utf8',
       env: { ...process.env, RAW_PLUGINS: rawPlugins, GITHUB_OUTPUT: outPath },
@@ -696,7 +707,7 @@ describe('workflow 插件清单一致性与输入语义（#204 防漂移）', ()
   // ── 语义一致性：注释/描述声明的能力 == UI 实际能力（#204 的核心矛盾）──
   it('plugins 输入是自由文本（choice 不支持 multiple），且注释不再声称可多选', () => {
     const section =
-      readFileSync(join(repoRoot, wfFile), 'utf8')
+      readWf(join(repoRoot, wfFile))
         .split(/^ {6}plugins:$/m)[1]
         ?.split(/^ {6}bump:$/m)[0] ?? ''
     expect(section).not.toBe('') // 解析失效时明确失败，而非静默通过
@@ -707,7 +718,7 @@ describe('workflow 插件清单一致性与输入语义（#204 防漂移）', ()
 
   it('bump 输入保持枚举单选（choice：patch/minor/major）', () => {
     const section =
-      readFileSync(join(repoRoot, wfFile), 'utf8')
+      readWf(join(repoRoot, wfFile))
         .split(/^ {6}bump:$/m)[1]
         ?.split(/^ {4}steps:$/m)[0] ?? ''
     expect(section).toMatch(/^ +type: choice$/m)
@@ -715,13 +726,13 @@ describe('workflow 插件清单一致性与输入语义（#204 防漂移）', ()
   })
 
   it('不再硬编码插件清单：允许值运行时取自 plugins/ 目录', () => {
-    const yml = readFileSync(join(repoRoot, wfFile), 'utf8')
+    const yml = readWf(join(repoRoot, wfFile))
     expect(yml).not.toMatch(/^ +- dsh-[a-z0-9-]+$/m) // 再出现 options 列表项即重新引入漂移
     expect(runScriptOf(wfFile, 'resolve-plugins')).toContain('plugins/*/')
   })
 
   it('用户输入只经 env 传入，绝不插值进 run 脚本（脚本注入防护）', () => {
-    const lines = readFileSync(join(repoRoot, wfFile), 'utf8').split('\n')
+    const lines = readWf(join(repoRoot, wfFile)).split('\n')
     const injected = lines.filter((l) => l.includes('${{ inputs.'))
     expect(injected.length).toBeGreaterThan(0) // 解析/重构失效时明确失败
     for (const line of injected) {

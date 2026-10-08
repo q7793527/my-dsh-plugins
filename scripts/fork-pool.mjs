@@ -43,6 +43,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { symlinkDir } from './lib/symlink-dir.mjs'
 import {
   REQUIRED_TOOLS,
   WRITABLE_NODE_MODULES_ENTRIES,
@@ -146,7 +147,10 @@ function provisionNodeModules(sourceNm, targetNm, mode) {
       dirs += 1
     } else {
       try {
-        symlinkSync(join(sourceNm, entry.name), dst)
+        // 目录条目（全部包）：win32 无特权 symlink 必 EPERM（issue #355）→ junction，
+        // 否则整仓逐包链接在 Windows 上全部静默失败（假绿：ok 但 0 条链接）
+        if (entry.isDirectory()) symlinkDir(join(sourceNm, entry.name), dst)
+        else symlinkSync(join(sourceNm, entry.name), dst)
         links += 1
       } catch {
         /* 个别条目并发创建时已存在：忽略即可，语义不变 */
@@ -162,7 +166,14 @@ function installHooks(forkDir) {
   if (!existsSync(huskyBin)) {
     return { ok: false, detail: 'fork 内没有 node_modules/.bin/husky（用 create 时别加 --node-modules none）' }
   }
-  const res = run(huskyBin, [], { cwd: forkDir })
+  // win32：`.bin/husky` 无扩展名的是 sh shim（#!/bin/sh），Windows 不能 shell-less spawn 它
+  // （spawnSync 失败 → status=null → 被记成 exit 1，core.hooksPath 永远设不上，hooks 静默
+  // 不生效）。改用 node 直接跑 husky 包入口 bin.js（package.json "bin": {"husky":"bin.js"}），
+  // 与 POSIX 上 sh shim 最终执行的完全同一个入口（issue #355）。
+  const win = process.platform === 'win32'
+  const res = run(win ? process.execPath : huskyBin, win ? [join(forkDir, 'node_modules', 'husky', 'bin.js')] : [], {
+    cwd: forkDir,
+  })
   const hooksPath = gitOut(forkDir, ['config', '--get', 'core.hooksPath'])
   const wired = hooksPath === '.husky/_' && existsSync(join(forkDir, '.husky', '_'))
   if (!wired) {
@@ -398,7 +409,8 @@ function relinkWorkspacePackages(forkDir) {
     if (current === wanted) continue
     try {
       rmSync(linkPath, { recursive: true, force: true })
-      symlinkSync(wanted, linkPath)
+      // win32 无特权 symlink 必 EPERM（issue #355）→ 目录走 junction，语义等价
+      symlinkDir(wanted, linkPath)
       relinked.push(name)
     } catch (error) {
       return { ok: false, count: entries.length, relinked, detail: `重指向 ${name} 失败：${error.message}` }

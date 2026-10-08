@@ -141,6 +141,10 @@ import {
   diffPackageJsonRuntimeFields,
   listChangedFiles,
 } from './lib/impact-scope.mjs'
+// issue #355：npm/npx/tsc 的跨平台启动解析（win32 无 shell 不能 spawn .cmd，Node 24 EINVAL）
+import { resolveToolInvocation } from './lib/local-toolchain.mjs'
+// issue #355：检查项输出里的 [verify-skip] 标记 → 归入「本地未跑」清单（不计通过/失败）
+import { parseLocalSkip, partitionResults } from './lib/local-skip.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const args = process.argv.slice(2)
@@ -353,14 +357,20 @@ function runCapture(cmd, cmdArgs, cwd, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? STEP_TIMEOUT_MS
   const cmdline = [cmd, ...cmdArgs].join(' ')
   const label = opts.label ?? cmdline
+  // 跨平台启动解析（issue #355）：win32 上 npm/npx 只有 .cmd/.ps1，Node 24 无 shell 派生
+  // .cmd 直接 EINVAL、`spawn('npm')` ENOENT —— 统一解析为「node 直跑 JS 入口」（任何平台
+  // 语义一致，且不引入 shell 二次解析）；node/git 等原生可执行名原样返回。
+  const inv = resolveToolInvocation(cmd, { projectRoot: cwd })
   return new Promise((resolveRun) => {
     const startedAt = Date.now()
     let child
     try {
-      child = spawn(cmd, cmdArgs, {
+      child = spawn(inv.file, [...inv.prefixArgs, ...inv.args, ...cmdArgs], {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true, // 自成进程组 → 超时可整组终止
+        // 仅回退分支（无 JS 入口的罕见布局）才交给 shell；参数数组边界保持不变
+        shell: inv.shell === true,
         // opts.env 覆盖 CHILD_ENV：audit 检查项需要显式指定官方 registry（issue #199）
         env: { ...childEnv(), ...(opts.env ?? {}) },
       })
@@ -1371,6 +1381,8 @@ for (const check of runList) {
       const extra = []
       if (detail) extra.push(detail)
       if (r.summary) extra.push(r.summary)
+      // issue #355：输出带 [verify-skip] 标记 = 本平台能力缺失、本地显式未跑（原因在标记里）
+      const localSkip = parseLocalSkip(r.out ?? '')
       return {
         id: check.id,
         label: check.label,
@@ -1382,6 +1394,7 @@ for (const check of runList) {
         timeoutMs: r.timeoutMs,
         ms,
         extra,
+        localSkip,
       }
     },
   })
@@ -1425,6 +1438,12 @@ log('')
 const totalStarted = Date.now()
 const watchdog = armWatchdog()
 const onTaskDone = (r) => {
+  // 本地未跑（[verify-skip]）：显式 ⏭ 展示原因，绝不显示成 ✅（防止跳过被读成通过）
+  if (r.localSkip) {
+    log(`${yellow('⏭')} ${r.label} ${dim(secs(r.ms))} ${dim(`本地未跑：${r.localSkip}`)}`)
+    for (const line of r.extra) log(`   ${line}`)
+    return
+  }
   const mark = r.ok ? green('✅') : red('❌')
   const timeoutNote = r.timedOut ? red(` ⏱ 单步超时（${secs(r.timeoutMs)} 上限，已终止该进程组）`) : ''
   log(`${mark} ${r.label} ${dim(secs(r.ms))}${timeoutNote}`)
@@ -1459,8 +1478,8 @@ const totalMs = Date.now() - totalStarted
 
 // ── 汇总 ────────────────────────────────────────────────────────────────────
 log('')
-const failed = results.filter((r) => !r.ok)
-const passed = results.filter((r) => r.ok)
+// issue #355：三分类——localSkip（本地未跑，单列清单）不混入通过/失败
+const { passed, failed, localSkipped } = partitionResults(results)
 
 if (options.fast) {
   const tested = tasks.find((t) => t.id === 'test')
@@ -1488,8 +1507,17 @@ if (optionalSkipped.length > 0) {
   for (const c of optionalSkipped) log(`  - ${c.label}（${c.note}）`)
 }
 
+// issue #355：本平台能力缺失的显式跳过（检查项输出了 [verify-skip]）——单列，不计通过/失败
+if (localSkipped.length > 0) {
+  log('')
+  log('注意：以下检查**本地未跑**（平台能力缺失，已显式跳过），CI 会强制执行：')
+  for (const s of localSkipped) log(`  - ${s.label}（${s.localSkip}）`)
+}
+
 log('')
-log(`结果：${passed.length} 通过 / ${failed.length} 失败 / 总耗时 ${secs(totalMs)}`)
+log(
+  `结果：${passed.length} 通过 / ${failed.length} 失败${localSkipped.length > 0 ? ` / ${localSkipped.length} 本地未跑` : ''} / 总耗时 ${secs(totalMs)}`,
+)
 writeJobSummary(results, totalMs)
 if (failed.length > 0) {
   log(red('❌ 失败项（CI 同样会失败，修复后重跑 npm run verify）：'))
@@ -1518,7 +1546,12 @@ if (failed.length > 0) {
   process.exit(1)
 }
 if (watchdog !== null) clearTimeout(watchdog)
-log(green('✅ 全部通过'))
+// 全部通过 ≠ 全部跑到：有平台性跳过时如实标注（仍是 exit 0——跳过项 CI 强制覆盖）
+log(
+  localSkipped.length > 0
+    ? `${green('✅ 全部通过')}${dim(`（${localSkipped.length} 项本地未跑，已列入上方清单，由 CI 强制覆盖）`)}`
+    : green('✅ 全部通过'),
+)
 process.exit(0)
 
 // ── 帮助 ────────────────────────────────────────────────────────────────────

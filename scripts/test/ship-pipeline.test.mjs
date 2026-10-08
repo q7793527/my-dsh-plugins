@@ -458,9 +458,14 @@ const VERIFY_STUB = `import { writeFileSync } from 'node:fs'
 writeFileSync(process.env.VERIFY_STUB_LOG, process.argv.slice(2).join(' '))
 `
 
-const GHOPS_STUB = `#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "$GHOPS_STUB_LOG"
-echo "https://example.invalid/pull/1"
+// ghops 桩：CJS → ESM（issue #355）—— Windows 由 ship.mjs 的 node shim 转 `node <脚本>` 执行，
+// 而 Node 24 对**无扩展名**入口文件按 ESM 加载（语法检测先试 ESM 解析，require 运行时才炸），
+// 所以桩必须用 import（实测：CJS 版 status=1，ESM 版 status=0）。POSIX 靠 shebang 直接执行，
+// 行为与原 bash 版逐字等价：实参空格连接追加日志 + 打印 PR URL，退出码 0。
+const GHOPS_STUB = `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs'
+appendFileSync(process.env.GHOPS_STUB_LOG, process.argv.slice(2).join(' ') + '\\n')
+console.log('https://example.invalid/pull/1')
 `
 
 /** 造一个「离线可跑通 push + pr」的隔离仓库，返回仓库 + 观测器。 */
@@ -495,8 +500,7 @@ describe('--push / --pr 全链路（离线沙箱，issue #337 附加产出）', 
     const { code, out } = runInRepo(o.repo, ['-m', 'fix(ship): #337 e2e 全链路', '--push', '--pr', '--issue', '337'], {
       env: o.env,
     })
-    expect(code).toBe(0)
-    // 本卡核心：提交信息经 stdin 真实写入（不被下面的编排断言替代）
+    expect(code, out).toBe(0)
     expect(commitMessage(o.repo)).toBe('fix(ship): #337 e2e 全链路')
     // 文案 == 行为：#330 曾打印 --fast 而实际跑 --full
     expect(out).toContain('verify-local --full')

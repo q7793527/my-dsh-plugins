@@ -80,7 +80,7 @@
  * 退出码：0 = 全部通过；1 = 存在失效引用。
  */
 import { execFileSync } from 'node:child_process'
-import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readdirSync } from 'node:fs'
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -712,19 +712,59 @@ function dirEntries(ctx, absDir) {
  * 自己核对名字才能让本地与 CI 判定一致。
  */
 export function fsExistsCaseSensitive(ctx, absPath) {
-  const segs = absPath.split('/').filter(Boolean)
-  let cur = absPath.startsWith('/') ? '/' : '.'
+  // 分隔符归一（issue #355）：本函数的输入既可能是 POSIX `/` 路径（链接目标、git 风格相对），
+  // 也可能是本平台 `join()` 拼出的 Windows 反斜杠绝对路径。旧实现只按 `/` 切，反斜杠整条路径
+  // 被当成**一个目录名** → readdir('.') 永远不含它 → 报「路径不存在」（Windows 实测 930 条误报）。
+  const raw = String(absPath)
+  const segs = raw.split(/[/\\]/).filter(Boolean)
+  // 起点：POSIX 绝对 `/`、Windows 盘符绝对 `D:/`（`D:` 段不能当普通目录名，必须先转成盘根）；
+  // 相对路径从 `.` 起（readdir('.') 相对当前工作目录，调用方保证传的是绝对路径或已拼 root）。
+  const driveRoot = /^([a-zA-Z]:)[/\\]/.exec(raw)
+  let cur = driveRoot ? `${driveRoot[1]}/` : /^[/\\]/.test(raw) ? '/' : '.'
+  if (driveRoot) segs.shift() // 盘符段已作为根，不参与逐段比对
   for (const seg of segs) {
     if (seg === '.') continue
     if (seg === '..') {
       cur = dirname(cur)
       continue
     }
+    if (/^[a-zA-Z]:$/.test(seg)) {
+      cur = `${seg}/` // 残留的裸盘符段（如 `C:` 单独出现）按盘根处理
+      continue
+    }
     const entries = dirEntries(ctx, cur)
-    if (!entries || !entries.has(seg)) return false
-    cur = cur === '/' ? `/${seg}` : `${cur}/${seg}`
+    if (entries) {
+      if (entries.has(seg)) {
+        cur = appendSeg(cur, seg)
+        continue
+      }
+      // 只有大小写不同的候选 = 大小写写错（大小写不敏感 FS 能命中、Linux CI 不会）→ 判不存在，
+      // 让本地与 CI 判定一致（本函数存在的意义，见上方注释）。
+      const ciCandidate = [...entries].find((e) => e.toLowerCase() === seg.toLowerCase())
+      if (ciCandidate !== undefined) return false
+    }
+    // readdir 里连不敏感匹配都没有：可能是 Windows 8.3 短名/内核别名（`os.tmpdir()` 常返回
+    // `C:\Users\ADMINI~1\...`，短名不出现在 readdir 中，但它真实可解析）——交给内核解析。
+    // 内核也解析不了 → 真不存在（Linux 大小写写错的情形已在上面按 CI 语义判掉）。
+    const resolved = safeRealpath(join(cur, seg))
+    if (!resolved) return false
+    cur = resolved
   }
   return true
+}
+
+/** 拼接逐段路径（根 `/` 与盘根 `D:/` 不再补分隔符）。 */
+function appendSeg(cur, seg) {
+  return cur === '/' || /[/\\]$/.test(cur) ? `${cur}${seg}` : `${cur}/${seg}`
+}
+
+/** realpath 解析（8.3 短名 / 软链别名）；失败返回 null（不存在即不可解析）。 */
+function safeRealpath(p) {
+  try {
+    return realpathSync(p)
+  } catch {
+    return null
+  }
 }
 
 /** 就近解析：文件所在目录 → 祖先目录链 → 仓库根；返回命中的仓库内相对路径。 */
@@ -749,8 +789,10 @@ function isExistingDirectory(lc, rel) {
 }
 
 function normalizeRel(p) {
+  // 分隔符归一（issue #355）：win32 的 `join()` 产出反斜杠，旧实现只按 `/` 切会把
+  // `docs\..\scripts\x` 当成一个含反斜杠的怪段名（部分路径碰巧被 fs 解析救回、部分误报）。
   const parts = []
-  for (const seg of p.split('/')) {
+  for (const seg of String(p).split(/[/\\]/)) {
     if (!seg || seg === '.') continue
     if (seg === '..') parts.pop()
     else parts.push(seg)

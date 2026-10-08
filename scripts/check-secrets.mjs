@@ -33,6 +33,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  decidePlatformSkip,
   decideScanExit,
   dedupeFindings,
   normalizeFindings,
@@ -42,6 +43,7 @@ import {
   verifyChecksum,
   verifyGitleaksVersion,
 } from './lib/gitleaks-scan.mjs'
+import { VERIFY_SKIP_MARK } from './lib/local-skip.mjs'
 
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 /**
@@ -53,7 +55,15 @@ const CACHE_DIR = process.env.GITLEAKS_CACHE_DIR
   ? resolve(process.env.GITLEAKS_CACHE_DIR)
   : join(REPO_ROOT, '.gitleaks-cache')
 const CONFIG_PATH = join(REPO_ROOT, '.gitleaks.toml')
-const TOOLS_PATH = join(REPO_ROOT, 'scripts', 'ci-tools.json')
+/**
+ * `GITLEAKS_TOOLS_PATH` 是**回归测试用的隔离口**（同 GITLEAKS_CACHE_DIR，见
+ * scripts/test/secrets-platform-skip.test.mjs）：防回归用例要构造「配置缺 gitleaks 条目」
+ * 「版本漂移 + 平台缺条目」两类 CI 必红的配置，不能改写真配置文件。
+ * 生产路径不设该变量；它只提供 SHA256/版本来源，不参与 URL 构造（URL 仍全由代码常量拼装）。
+ */
+const TOOLS_PATH = process.env.GITLEAKS_TOOLS_PATH
+  ? resolve(process.env.GITLEAKS_TOOLS_PATH)
+  : join(REPO_ROOT, 'scripts', 'ci-tools.json')
 const GITLEAKS_TIMEOUT_MS = 300_000
 const DOWNLOAD_TIMEOUT_MS = 120_000
 /** 扫描报告里回显「扫描了多少提交/字节」的摘要行——用于确认门禁真的扫了东西（而非空跑假绿）。 */
@@ -108,7 +118,50 @@ const targetRoot = options.target ? resolve(options.target) : REPO_ROOT
 
 const tools = JSON.parse(readFileSync(TOOLS_PATH, 'utf8'))
 const release = toolRelease(tools, 'gitleaks')
-if (!release.ok) fail(`[secrets] ${release.reason}（请在 scripts/ci-tools.json 补该平台的 SHA256 后再启用本门禁）`)
+// 测试覆盖变量必须先生效：decidePlatformSkip 以 release.ok / kind 为判据，
+// 覆盖 SHA 在场 = 调用方自己负责校验链（回归测试即靠它走完整的 fail-closed 路径）。
+if (process.env.GITLEAKS_SHA256) {
+  release.sha256 = process.env.GITLEAKS_SHA256
+  // 平台预置值缺失被显式覆盖 → 下载校验链可用（平台缺失的本地跳过只保留在纯默认路径）
+  release.ok = true
+}
+/** 与 scripts/ci-tools.json 的 gitleaks.version 必须一致；升级版本时两处同改（断言见下）。 */
+const RELEASE_VERSION = '8.30.1'
+// 漂移断言读**配置原值**而不是 release.version：平台缺预置 SHA256 时 toolRelease 的
+// ok 分支不参与，但「配置版本 vs 代码常量」的漂移检测与平台无关，必须照样生效（issue #355）。
+// 返工位置：断言必须放在**平台跳过决策之前**——否则本地因平台缺失跳过（exit 0）时它根本不
+// 执行，与「漂移检测与平台无关」的注释承诺矛盾。放最前 = 无条件执行，本地跳过路径照样抓漂移。
+const configuredVersion = tools?.gitleaks?.version
+if (configuredVersion !== RELEASE_VERSION) {
+  fail(
+    `[secrets] 版本漂移：scripts/ci-tools.json 是 ${configuredVersion}，代码常量 RELEASE_VERSION 是 ${RELEASE_VERSION}` +
+      '（下载地址只认代码常量，请两处同改）',
+  )
+}
+/**
+ * 平台缺失（ci-tools.json 没有本平台的 SHA256）的两端处置（issue #355）：
+ *   · 本地 → 显式「本地跳过：原因」+ `[verify-skip]` 标记，退出 0——verify-local 把它
+ *     归入**本地未跑清单**（不计通过、不计失败），不再与「有没有泄漏 secret」无关地硬红；
+ *   · CI → 仍然 fail（exit 2）——CI 平台缺校验值是配置缺陷，fail-closed。
+ * 除此之外的失败（配置文件缺 gitleaks 条目）照旧走 fail()——由 toolRelease 返回的
+ * `kind: 'config-missing'` 显式区分，decidePlatformSkip 对它本地/CI 一律 fail，不许被跳过吞掉。
+ *
+ * 适用边界（issue #355 后续实测）：只覆盖**纯默认生产路径**。两种显式意图不许被它吞掉——
+ *   ① 测试覆盖变量（GITLEAKS_RELEASE_URL / GITLEAKS_SHA256）：回归测试正是要验证
+ *      「协议拒绝 / SHA 不符 / 非 gitleaks 产物」这三条 fail-closed 路径；
+ *   ② `--bin` 显式指定二进制：路径存在性由用户给的路径负责，与平台预置值无关。
+ */
+const hasReleaseOverride = Boolean(process.env.GITLEAKS_RELEASE_URL || process.env.GITLEAKS_SHA256)
+if (!hasReleaseOverride && !options.bin) {
+  const verdict = decidePlatformSkip({ release })
+  if (verdict.mode === 'fail')
+    fail(`[secrets] ${verdict.reason}（请在 scripts/ci-tools.json 补该平台的 SHA256 后再启用本门禁）`)
+  if (verdict.mode === 'skip') {
+    console.log(`[secrets] ⏭ ${verdict.reason}`)
+    console.log(`${VERIFY_SKIP_MARK} ${verdict.reason}`)
+    process.exit(0)
+  }
+}
 
 /**
  * 下载地址**完全由代码内常量决定**（协议、主机、仓库路径、版本、产物名），
@@ -120,19 +173,12 @@ if (!release.ok) fail(`[secrets] ${release.reason}（请在 scripts/ci-tools.jso
  * 而 SHA256 校验只能事后拒绝、不能阻止请求发出。上一版只把**主机**移出配置（路径仍来自
  * 文件），CodeQL 依然如实报告「文件数据进入出站请求」，这条告警并未消除。
  *
- * 现在配置里的 `version` 只用于三件**本地**的事：缓存目录名、二进制版本核对、以及下面这条
- * 一致性断言（防止代码常量与配置漂移）；它不参与 URL 构造，所以文件数据到请求之间没有边。
+ * 现在配置里的 `version` 只用于三件**本地**的事：缓存目录名、二进制版本核对、以及启动时的
+ * 一致性断言（防止代码常量与配置漂移，见上文「版本漂移」断言）；它不参与 URL 构造，
+ * 所以文件数据到请求之间没有边。
  */
 const RELEASE_ORIGIN = 'https://github.com'
 const RELEASE_PATH_PREFIX = '/gitleaks/gitleaks/releases/download'
-/** 与 scripts/ci-tools.json 的 gitleaks.version 必须一致；升级版本时两处同改（下面有断言兜底）。 */
-const RELEASE_VERSION = '8.30.1'
-if (release.version !== RELEASE_VERSION) {
-  fail(
-    `[secrets] 版本漂移：scripts/ci-tools.json 是 ${release.version}，代码常量 RELEASE_VERSION 是 ${RELEASE_VERSION}` +
-      '（下载地址只认代码常量，请两处同改）',
-  )
-}
 /** 产物名按 GitHub Release 的固定命名规则拼装：全部片段来自代码常量或 process.*，无文件数据。 */
 const releaseAsset = `gitleaks_${RELEASE_VERSION}_${process.platform}_${process.arch}.tar.gz`
 
@@ -152,7 +198,6 @@ if (overrideUrl && overrideUrl.protocol !== 'http:' && overrideUrl.protocol !== 
 const releaseUrl = overrideUrl
   ? overrideUrl.href
   : `${RELEASE_ORIGIN}${RELEASE_PATH_PREFIX}/v${RELEASE_VERSION}/${releaseAsset}`
-if (process.env.GITLEAKS_SHA256) release.sha256 = process.env.GITLEAKS_SHA256
 
 // ── 取二进制（缓存命中 → 直接用；否则下载 + 校验 SHA256）────────────────────
 /** 版本化缓存路径：换版本不会复用旧二进制（配合 ci-tools.json 的固定版本）。 */

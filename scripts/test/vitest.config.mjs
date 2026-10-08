@@ -50,6 +50,10 @@ export default defineConfig({
         'scripts/lib/ci-workflow.mjs',
         'scripts/lib/gitleaks-scan.mjs',
         'scripts/lib/commit-lint.mjs',
+        'scripts/lib/artifact-mirror.mjs',
+        'scripts/lib/local-skip.mjs',
+        'scripts/lib/local-toolchain.mjs',
+        'scripts/lib/symlink-dir.mjs',
       ],
       thresholds: {
         lines: 85,

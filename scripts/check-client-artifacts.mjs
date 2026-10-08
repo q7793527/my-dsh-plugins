@@ -29,16 +29,19 @@
  *
  * 退出码：0 = 全部同源；1 = 存在漂移 / 无法判定（fail-closed：缺产物、tsc 失败、git 不可用都算失败）。
  */
-import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { createGitArchiveMirror } from './lib/artifact-mirror.mjs'
 import {
   evaluateClientArtifacts,
   findClientArtifactConsumers,
   renderClientArtifactReport,
 } from './lib/client-artifacts.mjs'
+// issue #355：npx 的跨平台启动解析（win32 无 shell spawn npx = ENOENT）
+import { resolveToolInvocation } from './lib/local-toolchain.mjs'
 
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const CLIENT_ARTIFACT = join('lib', 'client.js')
@@ -81,7 +84,11 @@ export function serverPlugins(root = REPO_ROOT) {
 /** 已提交（HEAD）的产物内容；未纳入版本控制 / git 不可用 → null（判据按 fail-closed 处理）。 */
 function committed(root, relPath) {
   try {
-    return execFileSync('git', ['show', `HEAD:${relPath}`], {
+    // git pathspec 必须用 `/`：win32 的 join() 产出反斜杠，而 `\` 在 pathspec 里是转义字符
+    // —— `HEAD:lib\client.js` 被解析成 `libclient.js` → ENOENT → 11/11 消费方全部误判
+    // 「未纳入版本控制」（Linux CI 用 / 拼接不受影响，本地绿 ⇒ CI 绿的反例）。
+    const posixRel = String(relPath).split(/[\\/]/).join('/')
+    return execFileSync('git', ['show', `HEAD:${posixRel}`], {
       cwd: root,
       maxBuffer: 64 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -105,15 +112,11 @@ function committed(root, relPath) {
  * `.client-build` 等中间产物也全部落在镜像里。
  */
 function createWorktreeMirror(sourceRoot, dir) {
-  const tar = spawnSync('bash', ['-c', `git archive HEAD | tar -x -C '${dir}'`], {
-    cwd: sourceRoot,
-    stdio: 'ignore',
-    timeout: 300_000,
-  })
-  if (tar.status !== 0) throw new Error('git archive HEAD 失败：无法建立只读镜像')
-  const modules = join(sourceRoot, 'node_modules')
-  if (existsSync(modules)) symlinkSync(modules, join(dir, 'node_modules'), 'dir')
-  return dir
+  // issue #355：原实现 `bash -c 'git archive HEAD | tar -x -C "$TMP"'` 依赖 bash 能解析
+  // Windows 路径（本机 bash 是 WSL bash，整项失败）。改为 Node 原生 tar 解包：
+  // git.exe 出 tar 字节流 → lib/artifact-mirror.mjs 落盘（零 shell、零 tar 前置），
+  // node_modules 软链/junction 一并在镜像里建好。失败语义不变：抛错 → 调用方 fail-closed。
+  return createGitArchiveMirror(sourceRoot, dir)
 }
 
 /** 重建单个消费方的 client bundle（`cwd` 指向镜像内的插件目录，绝不写工作区）。 */
@@ -122,15 +125,35 @@ function buildClient(pluginDir) {
 }
 
 /**
+ * 同源内容比较：按**代码内容**判定（行尾归一）。
+ *
+ * 为什么不逐字节比：本机 `core.autocrlf=true` 且无 .gitattributes，历史 blob 里存在 CRLF；
+ * 镜像（git archive）与 `git show`（blob 原样）返回的行尾、以及构建工具写出的行尾可能不同，
+ * 逐字节比会把「同一个文件、不同行尾」判成漂移（Windows 专属假红）。归一化只消除行尾差异，
+ * 代码内容一个字节都不放过；Linux 上两侧本就是 LF，判定与 CI 完全一致。
+ */
+function normalizeEol(buf) {
+  return Buffer.from(String(buf).replace(/\r\n/g, '\n'))
+}
+
+function sameSource(a, b) {
+  return Buffer.compare(normalizeEol(a), normalizeEol(b)) === 0
+}
+
+/**
  * 跑一次 server 端 tsc（在镜像里原地编译，产出落到镜像的 `lib/`），返回 `{相对路径: 内容}`
  * 或 null（tsc 失败 → fail-closed）。server tsconfig 已 `exclude: src/client`，与 client 产物互不干扰。
  */
 function buildServerInPlace(pluginDir) {
+  // issue #355：win32 上 `execFileSync('npx', ...)` 无 shell 必失败（ENOENT/EINVAL）——
+  // 统一经 resolveToolInvocation 解析为「node 直跑 npx-cli.js」，参数序列保持不变。
+  const npx = resolveToolInvocation('npx', { projectRoot: pluginDir })
   try {
-    execFileSync('npx', ['--no-install', 'tsc', '-p', 'tsconfig.json'], {
+    execFileSync(npx.file, [...npx.prefixArgs, ...npx.args, '--no-install', 'tsc', '-p', 'tsconfig.json'], {
       cwd: pluginDir,
       stdio: 'ignore',
       timeout: 600_000,
+      shell: npx.shell === true,
     })
   } catch {
     return null
@@ -193,8 +216,11 @@ export function runCheck({
   const clientResult = evaluateClientArtifacts(list, (plugin) => {
     const artifact = join(mirror, 'plugins', plugin, CLIENT_ARTIFACT)
     return {
-      expected: buildFailures.has(plugin) || !existsSync(artifact) ? null : readFileSync(artifact),
-      actual: committed(root, `plugins/${plugin}/${CLIENT_ARTIFACT}`),
+      expected: buildFailures.has(plugin) || !existsSync(artifact) ? null : normalizeEol(readFileSync(artifact)),
+      actual: (() => {
+        const committedBuf = committed(root, `plugins/${plugin}/${CLIENT_ARTIFACT}`)
+        return committedBuf === null ? null : normalizeEol(committedBuf)
+      })(),
     }
   })
   drifted.push(...clientResult.drifted)
@@ -216,7 +242,7 @@ export function runCheck({
       const actual = committed(root, `plugins/${plugin}/lib/${file}`)
       if (actual === null) {
         drifted.push({ plugin, parts: [], reason: `lib/${file} 未提交（源码在、产物缺失）` })
-      } else if (!expected.equals(actual)) {
+      } else if (!sameSource(expected, actual)) {
         drifted.push({
           plugin,
           parts: [`server:${file}`],

@@ -36,13 +36,52 @@ export function platformKey(platform = process.platform, arch = process.arch) {
  */
 export function toolRelease(tools, toolName, platform = process.platform, arch = process.arch) {
   const tool = tools?.[toolName]
-  if (!tool) return { ok: false, reason: `scripts/ci-tools.json 里没有 ${toolName} 的固定版本` }
+  if (!tool) {
+    // kind 区分两种 ok:false（返工防回归）：config-missing 是**配置缺陷**（缺条目），
+    // 本地与 CI 都必须 fail；platform-missing 才允许本地显式跳过（见 decidePlatformSkip）。
+    return { ok: false, kind: 'config-missing', reason: `scripts/ci-tools.json 里没有 ${toolName} 的固定版本` }
+  }
   const key = platformKey(platform, arch)
   const sha256 = tool.checksums?.[key]
   if (!sha256) {
-    return { ok: false, reason: `${toolName} ${tool.version} 没有为平台 ${key} 预置 SHA256（不支持的平台）` }
+    // version 照带（issue #355）：平台缺校验值时调用方仍需要它做「配置版本 vs 代码常量」
+    // 漂移断言与缓存路径拼装——否则会误报「version undefined 漂移」这种与平台无关的假红。
+    return {
+      ok: false,
+      kind: 'platform-missing',
+      reason: `${toolName} ${tool.version} 没有为平台 ${key} 预置 SHA256（不支持的平台）`,
+      version: tool.version,
+    }
   }
   return { ok: true, version: tool.version, key, sha256 }
+}
+
+/**
+ * 平台缺失（toolRelease 给不出该平台的预置 SHA256）时的两端处置（issue #355）。
+ *   · 本地：`skip` —— 必须以「本地跳过：<原因>」显式报告并让调用方输出 [verify-skip] 标记，
+ *     进入 verify 的**未跑项清单**（不计入通过，也不计入失败）；
+ *     之前的行为是直接硬红（exit 2），本地门禁与「代码里有没有泄漏 secret」无关地红着，
+ *     这正是「本地红得没有信息量」的缺陷。
+ *   · CI：仍 `fail` —— CI 平台缺校验值 = ci-tools.json 配置缺陷，fail-closed，
+ *     门禁在 CI 上**永远不许跳过**（CI 永不传 --allow-missing 同一原则）。
+ *
+ * ⚠️ 只有 `kind === 'platform-missing'`（平台无预置 SHA256）才允许本地 skip：
+ * `kind === 'config-missing'`（配置文件里缺 gitleaks 条目）是 CI 必红的配置缺陷，
+ * 本地与 CI 一律 fail——不许被本地跳过吞掉（返工前只看 release.ok === false，两类混为一谈）。
+ * @param {{release:{ok:boolean,kind?:string,reason?:string}, isCi?:boolean}} input
+ *   isCi 缺省取 Boolean(process.env.CI)。
+ */
+export function decidePlatformSkip({ release, isCi = Boolean(process.env.CI) }) {
+  if (release?.ok) return { mode: 'proceed' }
+  const reason = release?.reason ?? 'gitleaks 平台校验值缺失（原因未知）'
+  if (release?.kind !== 'platform-missing') {
+    // 配置缺条目（或来源不明的 false）：本地同样 fail-closed，绝不当成本地可跳过
+    return { mode: 'fail', reason: `${reason}——配置缺陷（非平台缺失），本地与 CI 一律不许跳过` }
+  }
+  if (isCi) {
+    return { mode: 'fail', reason: `${reason}——CI 上属门禁配置缺陷，fail-closed 拒绝跳过` }
+  }
+  return { mode: 'skip', reason: `本地跳过：${reason}；CI 仍强制执行本门禁` }
 }
 
 /** 十六进制摘要比较（大小写无关；任一侧为空 → 不一致）。 */

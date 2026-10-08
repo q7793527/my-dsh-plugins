@@ -20,13 +20,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SCRIPT = join(ROOT, 'scripts', 'check-secrets.mjs')
-const TOOLS = JSON.parse(
-  execFileSync(
-    'node',
-    ['-e', `process.stdout.write(require('node:fs').readFileSync('${join(ROOT, 'scripts', 'ci-tools.json')}','utf8'))`],
-    { encoding: 'utf8' },
-  ),
-)
+// 直接读文件：原先经 `node -e '...readFileSync("<win路径>")'` 拼接，win32 反斜杠在 -e 源码里
+// 被当转义序列吃掉（`D:\dsh` → `D:dsh`）→ suite 加载即 ENOENT（POSIX / 路径无此问题）。
+const TOOLS = JSON.parse(readFileSync(join(ROOT, 'scripts', 'ci-tools.json'), 'utf8'))
 const PLATFORM_KEY = `${process.platform}-${process.arch}`
 
 /** gitleaks 二进制位置（与 scripts/check-secrets.mjs 的缓存路径一致）。 */
