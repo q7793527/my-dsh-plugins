@@ -200,7 +200,11 @@ describe('create.files drives a real multipart upload', () => {
         : { body: { status: 'COMPLETED', data: { image_url: 'https://cdn.example/bfl-1.png' } } },
     )
     try {
-      const assets = await generateMedia('bfl-flux', { model: 'flux-schnell', prompt: 'a cat' } as never, 'sk-files-test')
+      const assets = await generateMedia(
+        'bfl-flux',
+        { model: 'flux-schnell', prompt: 'a cat' } as never,
+        'sk-files-test',
+      )
       const create = stub.calls.find((c) => c.method === 'POST')!
       expect(create.url).toBe('https://api.bfl.ai/v1/flux-schnell')
       expect(typeof create.body).toBe('string')

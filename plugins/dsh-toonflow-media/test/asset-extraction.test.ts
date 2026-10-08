@@ -24,12 +24,18 @@ function stubFetch(createBody: unknown, pollBody: unknown, resultBody?: unknown)
     } else {
       body = JSON.stringify(createBody)
     }
-    const headers: Record<string, string> = resultBody !== undefined && url.includes('/download')
-      ? { 'content-type': 'video/mp4' }
-      : { 'content-type': 'application/json' }
+    const headers: Record<string, string> =
+      resultBody !== undefined && url.includes('/download')
+        ? { 'content-type': 'video/mp4' }
+        : { 'content-type': 'application/json' }
     return new Response(body, { status: 200, headers })
   }) as typeof fetch
-  return { calls, restore: () => { globalThis.fetch = original } }
+  return {
+    calls,
+    restore: () => {
+      globalThis.fetch = original
+    },
+  }
 }
 
 describe('asset extraction follows manifest response descriptors', () => {
@@ -48,7 +54,11 @@ describe('asset extraction follows manifest response descriptors', () => {
     try {
       const assets = await generateMedia(
         'fal-queue-image',
-        { model: 'fal-queue-image', prompt: 'a cat', providerOptions: { 'fal-queue-image': { statusPath: 'queue/p-1' } } } as never,
+        {
+          model: 'fal-queue-image',
+          prompt: 'a cat',
+          providerOptions: { 'fal-queue-image': { statusPath: 'queue/p-1' } },
+        } as never,
         'sk-descriptor-test',
       )
       expect(assets.map((a) => a.url)).toEqual(['https://cdn.example/fal-1.png', 'https://cdn.example/fal-2.png'])
@@ -100,9 +110,12 @@ describe('asset extraction follows manifest response descriptors', () => {
 
   it('extracts gemini-image inline data through the $map/$filter descriptor', async () => {
     // manifests/google-gemini-image.json -> images: $map over candidates[0].content.parts
-    const stub = stubFetch({
-      candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'iVBORw0KGgo=' } }] } }],
-    }, {})
+    const stub = stubFetch(
+      {
+        candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'iVBORw0KGgo=' } }] } }],
+      },
+      {},
+    )
     try {
       const assets = await generateMedia(
         'gemini-image',
@@ -135,11 +148,7 @@ describe('asset extraction follows manifest response descriptors', () => {
 
   it('falls back to the declared result endpoint when the payload carries no media', async () => {
     // manifests/full-video.json -> result: GET /v1/videos/{{taskId}}/download
-    const stub = stubFetch(
-      { id: 'task-9' },
-      { status: 'completed' },
-      new Uint8Array([0, 1, 2, 3]),
-    )
+    const stub = stubFetch({ id: 'task-9' }, { status: 'completed' }, new Uint8Array([0, 1, 2, 3]))
     try {
       const assets = await generateMedia(
         'full-video',
@@ -165,7 +174,11 @@ describe('asset extraction follows manifest response descriptors', () => {
     try {
       const assets = await generateMedia(
         'fal-queue-image',
-        { model: 'fal-queue-image', prompt: 'a cat', providerOptions: { 'fal-queue-image': { statusPath: 'queue/p-2' } } } as never,
+        {
+          model: 'fal-queue-image',
+          prompt: 'a cat',
+          providerOptions: { 'fal-queue-image': { statusPath: 'queue/p-2' } },
+        } as never,
         'sk-descriptor-test',
       )
       expect(assets).toEqual([{ mediaType: 'image', type: 'url', url: 'https://cdn.example/fal-fallback.png' }])

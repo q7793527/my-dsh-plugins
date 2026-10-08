@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  descriptorKeyFor,
-  extractAssets,
-  normalizeAssets,
-  readPath,
-  readResponseField,
-} from '../lib/assets.js'
+import { descriptorKeyFor, extractAssets, normalizeAssets, readPath, readResponseField } from '../lib/assets.js'
 
 /**
  * 资产提取的回落链（declared descriptor → resultPaths → 硬编码 URL 表）已被

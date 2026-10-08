@@ -4,14 +4,18 @@
   "description": "DSH 插件：让 DSH agent 用 BeefTV 85 个渠道 manifest 直接生成图片/视频/音频（in-process，不启动 Toonflow 服务器）。",
   "type": "module",
   "main": "lib/index.js",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "npx tsc -p tsconfig.json",
     "typecheck": "npx tsc --noEmit -p tsconfig.json",
     "test": "npx vitest run --coverage"
   },
   "exports": {
-    ".": { "default": "./lib/index.js" },
+    ".": {
+      "default": "./lib/index.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -27,7 +31,9 @@
     "LICENSE"
   ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" }
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   },
   "license": "MIT"
 }

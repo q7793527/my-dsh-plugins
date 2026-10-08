@@ -141,9 +141,7 @@ describe('poll succeeded but the payload holds no media', () => {
     restore = stub.restore
     const assets = await generateMedia('async-audio', { model: 'tts-1', prompt: 'hi' }, 'sk-1')
     // caps 只有 audio、且无 resultKind：mediaType 走 'audio' 兜底分支。
-    expect(assets).toEqual([
-      { mediaType: 'audio', type: 'url', url: 'https://cdn.example/out.mp3' },
-    ])
+    expect(assets).toEqual([{ mediaType: 'audio', type: 'url', url: 'https://cdn.example/out.mp3' }])
   })
 })
 

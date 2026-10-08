@@ -48,15 +48,16 @@ describe('async poll descriptors', () => {
 
   it('keeps polling while a $coalesce status ref reports a non-terminal value', async () => {
     // fal-queue-image: taskId comes from response.prompt_id, status from response.status.
-    const stub = stubFetch(
-      { prompt_id: 'p-777' },
-      { status: 'IN_QUEUE', url: 'https://cdn.example/fal.png' },
-    )
+    const stub = stubFetch({ prompt_id: 'p-777' }, { status: 'IN_QUEUE', url: 'https://cdn.example/fal.png' })
     vi.useFakeTimers()
     try {
       const run = generateMedia(
         'fal-queue-image',
-        { model: 'fal-queue-image', prompt: 'a cat', providerOptions: { 'fal-queue-image': { statusPath: 'queue/p-777' } } } as never,
+        {
+          model: 'fal-queue-image',
+          prompt: 'a cat',
+          providerOptions: { 'fal-queue-image': { statusPath: 'queue/p-777' } },
+        } as never,
         'sk-descriptor-test',
       )
       const settled = expect(run).rejects.toThrow(/did not complete within/)

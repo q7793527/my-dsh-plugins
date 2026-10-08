@@ -33,9 +33,7 @@ describe('toonflow_media_generate success path', () => {
         {},
       )) as { assets: { mediaType: string; type: string; url?: string }[] }
 
-      expect(out.assets).toEqual([
-        { mediaType: 'image', type: 'url', url: 'https://cdn.example/i.png' },
-      ])
+      expect(out.assets).toEqual([{ mediaType: 'image', type: 'url', url: 'https://cdn.example/i.png' }])
       expect(stub.calls).toHaveLength(1)
       const call = stub.calls[0]
       expect(call.method).toBe('POST')

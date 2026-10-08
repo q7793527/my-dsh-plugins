@@ -111,7 +111,11 @@ describe('poll failure issues the manifest-declared cancel', () => {
     )
     try {
       await expect(
-        generateMedia('volcengine-ark-video', { model: 'seedance-1-0-pro', prompt: 'a cat' } as never, 'sk-cancel-test'),
+        generateMedia(
+          'volcengine-ark-video',
+          { model: 'seedance-1-0-pro', prompt: 'a cat' } as never,
+          'sk-cancel-test',
+        ),
       ).rejects.toThrow(/Task failed/)
       expect(findCall(stub.calls, 'DELETE', '/api/v3/contents/generations/tasks/task-12')).toBeDefined()
     } finally {
@@ -158,9 +162,7 @@ describe('poll failure issues the manifest-declared cancel', () => {
     )
     try {
       const assets = await generateMedia('newapi', { model: 'sora-2', prompt: 'a cat' } as never, 'sk-cancel-test')
-      expect(assets).toEqual([
-        { mediaType: 'video', type: 'url', url: 'https://cdn.example/newapi.mp4' },
-      ])
+      expect(assets).toEqual([{ mediaType: 'video', type: 'url', url: 'https://cdn.example/newapi.mp4' }])
       expect(stub.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
         'POST https://api.openai.com/v1/videos',
         'GET https://api.openai.com/v1/videos/task-14',

@@ -43,7 +43,12 @@ export function stubFetch(respond: (call: RecordedCall) => StubResponse | undefi
       headers: { 'content-type': out.contentType ?? 'application/json' },
     })
   }) as typeof fetch
-  return { calls, restore: () => { globalThis.fetch = original } }
+  return {
+    calls,
+    restore: () => {
+      globalThis.fetch = original
+    },
+  }
 }
 
 /** Header 查找必须大小写无关，否则「没有显式 Content-Type」这种断言会假绿。 */

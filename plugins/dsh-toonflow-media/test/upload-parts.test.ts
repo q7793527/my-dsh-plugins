@@ -94,9 +94,10 @@ describe('buildMultipartBody scalar fields', () => {
 })
 
 describe('buildMultipartBody media parts', () => {
-  const provider = (files: unknown[]) => ({
-    create: { path: '/v1/x', contentType: 'multipart/form-data', files },
-  }) as never
+  const provider = (files: unknown[]) =>
+    ({
+      create: { path: '/v1/x', contentType: 'multipart/form-data', files },
+    }) as never
 
   it('skips file entries that declare no source at all', async () => {
     const form = await buildMultipartBody(
@@ -156,7 +157,7 @@ describe('buildMultipartBody media parts', () => {
       provider([{ name: 'ref', source: ['https://cdn.example/raw.bin'] }]),
       {},
       ctx,
-      makeContext(async () => new Response(new Uint8Array([9])))
+      makeContext(async () => new Response(new Uint8Array([9]))),
     )
     const part = form.get('ref')
     expect(part).toBeInstanceOf(Blob)

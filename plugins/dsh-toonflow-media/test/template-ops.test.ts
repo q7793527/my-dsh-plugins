@@ -92,9 +92,7 @@ describe('interpret: omission and merging operators', () => {
 
   it('$coalesce accepts a single non-array candidate and reports all-null as null', () => {
     expect(interpret({ $coalesce: 'only' }, ctx)).toBe('only')
-    expect(
-      interpret({ $coalesce: [{ $ref: 'request.missing' }, { $ref: 'response.alsoMissing' }] }, ctx),
-    ).toBeNull()
+    expect(interpret({ $coalesce: [{ $ref: 'request.missing' }, { $ref: 'response.alsoMissing' }] }, ctx)).toBeNull()
   })
 
   it('$merge accepts a single object and ignores non-object members', () => {
@@ -130,10 +128,9 @@ describe('interpret: iteration operators', () => {
 
   it('$sortByOrder passes a non-array through untouched and sorts by numeric order', () => {
     expect(interpret({ $sortByOrder: 'scalar' }, ctx)).toBe('scalar')
-    const sorted = interpret(
-      { $sortByOrder: [{ order: '10' }, { order: 2 }, { order: 1 }] },
-      ctx,
-    ) as { order: unknown }[]
+    const sorted = interpret({ $sortByOrder: [{ order: '10' }, { order: 2 }, { order: 1 }] }, ctx) as {
+      order: unknown
+    }[]
     expect(sorted.map((x) => x.order)).toEqual([1, 2, '10'])
   })
 
