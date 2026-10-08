@@ -13,12 +13,37 @@ export type RecordedCall = {
   method: string
   url: string
   headers: Record<string, string>
-  body: BodyInit | undefined
+  /** 与 fetch 的 init.body 同类型（可为 null，表示显式无 body）。 */
+  body: RequestInit['body']
   /** 请求发出时携带的 signal 是否已经 abort —— cancel 不能复用被 abort 的 signal。 */
   aborted: boolean
 }
 
-export type StubResponse = { status?: number; body?: BodyInit; contentType?: string }
+/**
+ * 测试替身要返回的响应体：真实 JSON 值（对象/数组/标量）或已就绪的 BodyInit。
+ * stubFetch 会把 JSON 值序列化后交给 Response，见 serializeBody。
+ * 对象成员允许 undefined —— 测试字面量里的可选属性（`status?: undefined`）就是它。
+ */
+type JsonBody = string | number | boolean | null | JsonBody[] | { [key: string]: JsonBody | undefined }
+
+export type StubResponse = { status?: number; body?: BodyInit | JsonBody; contentType?: string }
+
+/**
+ * Uint8Array 收窄到 BodyInit 实际要求的 ArrayBufferView<ArrayBuffer>
+ * （裸 Uint8Array 是 Uint8Array<ArrayBufferLike>，赋不进 BodyInit）。
+ */
+function isBytes(raw: BodyInit | JsonBody): raw is Uint8Array<ArrayBuffer> {
+  return raw instanceof Uint8Array
+}
+
+/** 响应体出站：string / Uint8Array / Blob 原样交给 Response，其余（含 JSON 对象）序列化。 */
+function serializeBody(raw: BodyInit | JsonBody): BodyInit {
+  if (typeof raw === 'string') return raw
+  // 先收到 object 再判断字节视图：JsonBody 里的标量会污染 instanceof 的收窄结果。
+  if (typeof raw === 'object' && raw !== null && isBytes(raw)) return raw
+  if (raw instanceof Blob) return raw
+  return JSON.stringify(raw)
+}
 
 export function stubFetch(respond: (call: RecordedCall) => StubResponse | undefined) {
   const calls: RecordedCall[] = []
@@ -33,11 +58,10 @@ export function stubFetch(respond: (call: RecordedCall) => StubResponse | undefi
     }
     calls.push(call)
     const out = respond(call) ?? {}
-    const raw: BodyInit = out.body ?? '{}'
+    const raw: BodyInit | JsonBody = out.body ?? '{}'
     // Response 只接受 string / BufferSource / Blob / ReadableStream：
     // 传对象会被隐式转成 "[object Object]"，测试替身必须自己序列化。
-    const payload: BodyInit =
-      typeof raw === 'string' || raw instanceof Uint8Array || raw instanceof Blob ? raw : JSON.stringify(raw)
+    const payload: BodyInit = serializeBody(raw)
     return new Response(payload, {
       status: out.status ?? 200,
       headers: { 'content-type': out.contentType ?? 'application/json' },

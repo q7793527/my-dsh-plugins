@@ -18,7 +18,7 @@ function collect(ctx: any): ToolDef[] {
   return defs
 }
 
-function withDshHome(target: string, run: () => void | Promise<void>) {
+function withDshHome<T>(target: string, run: () => T | Promise<T>): Promise<T> {
   const saved = process.env.DSH_HOME
   process.env.DSH_HOME = target
   return Promise.resolve()

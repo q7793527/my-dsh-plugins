@@ -11,7 +11,10 @@ import { headerValue, stubFetch } from './fetch-stub.js'
 type Tool = {
   name: string
   execute: (args: unknown, exec: unknown) => Promise<unknown>
-  output: { schema: { render: (args: unknown, value: unknown) => { type: string; text: string }[] } }
+  output: {
+    schema: { render: (args: unknown, value: unknown) => { type: string; text: string }[] }
+    render: (args: unknown, value: unknown) => { type: string; text: string }[]
+  }
 }
 
 function collect(): Tool[] {

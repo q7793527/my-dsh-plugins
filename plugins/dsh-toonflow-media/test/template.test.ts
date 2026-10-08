@@ -68,9 +68,9 @@ describe('interpret', () => {
     const result = interpret(
       { $filter: { from: { $ref: 'request.images' }, as: 'media', where: { $ne: [{ $ref: 'media.role' }, 'mask'] } } },
       ctx as any,
-    )
+    ) as { role: string }[]
     expect(result).toHaveLength(1)
-    expect((result[0] as any).role).toBe('image')
+    expect(result[0].role).toBe('image')
   })
   it('resolves $switch', () => {
     expect(
@@ -89,9 +89,9 @@ describe('interpret', () => {
     expect(interpret({ $first: { $ref: 'request.images' } }, ctx as any)).toEqual({ role: 'image', order: 1 })
   })
   it('resolves $sortByOrder', () => {
-    const result = interpret({ $sortByOrder: { $ref: 'request.images' } }, ctx as any)
-    expect((result[0] as any).order).toBe(1)
-    expect((result[1] as any).order).toBe(2)
+    const result = interpret({ $sortByOrder: { $ref: 'request.images' } }, ctx as any) as { order: number }[]
+    expect(result[0].order).toBe(1)
+    expect(result[1].order).toBe(2)
   })
 })
 
