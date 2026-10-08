@@ -71,7 +71,9 @@ test('#105 解包前拒绝 `..` 路径穿越的 entry', async () => {
 })
 
 test('#105 解包前拒绝绝对路径 entry（系统 tar 只会剥掉 `/` 前缀后照常落盘）', async () => {
-  await assertRejected(({ outside }) => [entry(join(outside, 'escaped.txt'), { data: 'PWNED' })], /绝对路径/)
+  // win 上 join(outside,…) 产盘符路径 → 实现按「盘符」类拒绝（盘符即 win 形态的绝对路径，issue #355）；
+  // POSIX 上仍是 '/…' 绝对路径 → 按「绝对路径」类拒绝。两种分类都点名了同一威胁。
+  await assertRejected(({ outside }) => [entry(join(outside, 'escaped.txt'), { data: 'PWNED' })], /绝对路径|盘符/)
 })
 
 test('#105 解包前拒绝 Windows 盘符与反斜杠分隔符 entry', async () => {
@@ -160,7 +162,10 @@ test('#105 拒绝 header 校验和不符的 tar（结构非法）', async () => 
 
 // ── 正常包必须照常可扫（含包内软链 / 合法硬链，不得误杀）──────────────────
 
-test('#105 正常包照常解包扫描（包内相对软链与合法硬链不误杀）', async () => {
+// win 跳过（issue #355）：解包要靠系统 tar 物化包内 symlink，win 非特权下 bsdtar
+// 创建软链报错（Error exit delayed）→ 用例无判定力；npm 生产包（npm pack）不会带
+// symlink，win 用户不受影响。#105 拒绝语义由上面各拒绝用例覆盖。
+test.skipIf(process.platform === 'win32')('#105 正常包照常解包扫描（包内相对软链与合法硬链不误杀）', async () => {
   const entries = [
     dir('./'),
     dir('./lib/'),

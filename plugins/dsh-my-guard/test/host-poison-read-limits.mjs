@@ -87,22 +87,28 @@ test('#327 中文内容仍进内容规则扫描（字节账修正不得影响检
 
 // ── ② 类型闸门：非普通文件在读之前就被拒 ────────────────────────────────────
 
-test('#327 FIFO 不被读入：readText 立即返回而不是永久阻塞', { timeout: 20_000 }, async () => {
-  const dir = tempDir()
-  const fifo = join(dir, 'pipe.js')
-  execFileSync('mkfifo', [fifo])
+// win 无 mkfifo（POSIX FIFO 能力缺失，issue #355）：FIFO 场景在 win 无判定力，
+// 跳过并显式注记；#327 类型闸门语义由「目录路径归入非普通文件」用例覆盖。
+test.skipIf(process.platform === 'win32')(
+  '#327 FIFO 不被读入：readText 立即返回而不是永久阻塞',
+  { timeout: 20_000 },
+  async () => {
+    const dir = tempDir()
+    const fifo = join(dir, 'pipe.js')
+    execFileSync('mkfifo', [fifo])
 
-  const h = handle()
-  const outcome = await Promise.race([
-    readText(fifo, h).then((value) => ({ kind: 'returned', value })),
-    new Promise((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 3000)),
-  ])
+    const h = handle()
+    const outcome = await Promise.race([
+      readText(fifo, h).then((value) => ({ kind: 'returned', value })),
+      new Promise((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 3000)),
+    ])
 
-  assert.equal(outcome.kind, 'returned', '带超时断言：FIFO 上必须立即返回（旧实现 readFile 会挂起）')
-  assert.equal(outcome.value, null)
-  assert.equal(h.bytes, 0, 'FIFO 不计入字节账')
-  assert.equal(h.skipped?.['not-a-file'], 1, '分类到「非普通文件」而不是静默丢弃')
-})
+    assert.equal(outcome.kind, 'returned', '带超时断言：FIFO 上必须立即返回（旧实现 readFile 会挂起）')
+    assert.equal(outcome.value, null)
+    assert.equal(h.bytes, 0, 'FIFO 不计入字节账')
+    assert.equal(h.skipped?.['not-a-file'], 1, '分类到「非普通文件」而不是静默丢弃')
+  },
+)
 
 test.skipIf(process.platform === 'win32')('#327 字符设备不被读入（/dev/null 归入非普通文件）', async () => {
   const h = handle()
@@ -124,7 +130,9 @@ test('#327 不存在的路径归入「文件不存在」', async () => {
   assert.equal(h.skipped?.['not-found'], 1)
 })
 
-test.skipIf(process.getuid?.() === 0)('#327 权限拒绝归入「权限不足」', async () => {
+// win 跳过（issue #355）：chmod 0000 在 win 只拦写不拦读，无法注入「读被拒」→ 用例无判定力
+// （与 dsh-my-observability 的 EACCES 注记同款理由）。
+test.skipIf(process.getuid?.() === 0 || process.platform === 'win32')('#327 权限拒绝归入「权限不足」', async () => {
   const dir = tempDir()
   const file = join(dir, 'locked.js')
   writeFileSync(file, 'const locked = 1\n')
