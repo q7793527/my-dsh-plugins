@@ -1,0 +1,6 @@
+# dsh bundle patch: inserts this plugin row into the profile roster.
+# Server-side only (no client UI). Install with:
+#   dsh plugin add link:D:\dsh-workspace\my-dsh-plugins\plugins\dsh-toonflow-media
+- insert:
+    - id: toonflow-media
+      name: 'dsh-toonflow-media'
