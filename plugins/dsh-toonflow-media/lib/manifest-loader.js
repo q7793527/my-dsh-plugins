@@ -1,12 +1,12 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-const __dirname = fileURLToPath(new URL(".", import.meta.url));
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
 export function loadManifests() {
-    const dir = join(__dirname, "..", "manifests");
-    const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    const dir = join(__dirname, '..', 'manifests');
+    const files = readdirSync(dir).filter((f) => f.endsWith('.json'));
     return files.map((f) => {
-        const raw = readFileSync(join(dir, f), "utf8");
+        const raw = readFileSync(join(dir, f), 'utf8');
         return JSON.parse(raw);
     });
 }

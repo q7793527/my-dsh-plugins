@@ -61,25 +61,29 @@ const KEY_PARAMS = {
     required: ['providerId', 'apiKey'],
     additionalProperties: false,
 };
-const KEY_OUTPUT = { type: 'object', properties: { ok: { type: 'boolean' }, providerId: { type: 'string' } }, required: ['ok', 'providerId'] };
+const KEY_OUTPUT = {
+    type: 'object',
+    properties: { ok: { type: 'boolean' }, providerId: { type: 'string' } },
+    required: ['ok', 'providerId'],
+};
 // render() 由宿主在工具返回后调用，value 可能缺字段（失败/空结果），必须防御性渲染成安全形状。
 function renderList(value) {
     const providers = typeof value?.providers === 'string' ? value.providers : '';
     return 'Available media providers:\n' + providers;
 }
+/** Render one asset as a bullet line; unknown shapes fall back to the binary branch. */
+function renderAssetLine(a) {
+    const asset = (a ?? {});
+    const label = asset.mediaType ?? 'media';
+    if (asset.type === 'url')
+        return '- [' + label + '] ' + (asset.url ?? '(no url)');
+    if (asset.type === 'base64')
+        return '- [' + label + '] base64 (' + (asset.data ? String(asset.data).length : 0) + ' chars)';
+    return '- [' + label + '] binary (' + (asset.mimeType ?? '') + ')';
+}
 function renderGen(value) {
-    const lines = [];
     const assets = Array.isArray(value?.assets) ? value.assets : [];
-    for (const a of assets) {
-        const asset = (a ?? {});
-        const label = asset.mediaType ?? 'media';
-        if (asset.type === 'url')
-            lines.push('- [' + label + '] ' + (asset.url ?? '(no url)'));
-        else if (asset.type === 'base64')
-            lines.push('- [' + label + '] base64 (' + (asset.data ? String(asset.data).length : 0) + ' chars)');
-        else
-            lines.push('- [' + label + '] binary (' + (asset.mimeType ?? '') + ')');
-    }
+    const lines = assets.map(renderAssetLine);
     if (lines.length === 0)
         lines.push('- (no media returned)');
     return 'Generated media:\n' + lines.join('\n');
@@ -145,7 +149,9 @@ function createKeyTool() {
         parameters: KEY_PARAMS,
         output: {
             schema: KEY_OUTPUT,
-            render: (_args, value) => [{ type: 'text', text: renderKey(value) }],
+            render: (_args, value) => [
+                { type: 'text', text: renderKey(value) },
+            ],
         },
         async execute(args, exec) {
             return execKey(args, exec);

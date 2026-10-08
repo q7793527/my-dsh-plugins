@@ -30,6 +30,34 @@ export function listProviders() {
  * resort after the payload itself yielded nothing, so providers that already
  * return a URL never issue an extra request.
  */
+/** Ask the declared result endpoint for the document; nothing to fetch means nothing to decode. */
+async function requestResultDocument(
+  result: NonNullable<ManifestProvider['result']>,
+  baseUrl: string,
+  ctx: TemplateContext,
+  context: ProviderContext,
+): Promise<Response | undefined> {
+  const url = `${baseUrl}${renderPath(result.path, ctx)}`
+  const response = await context.tool.fetch(url, {
+    method: result.method || 'GET',
+    headers: { Authorization: `Bearer ${context.config.apiKey ?? ''}`, ...(result.headers ?? {}) },
+    signal: context.signal,
+  })
+  return response.ok ? response : undefined
+}
+
+/** Decode a result-endpoint payload: JSON goes through the asset normalizer, anything else is raw bytes. */
+async function decodeResultResponse(
+  response: Response,
+  mediaType: 'image' | 'video' | 'audio',
+  result: NonNullable<ManifestProvider['result']>,
+): Promise<MediaAsset[]> {
+  const mimeType = response.headers.get('content-type') ?? result.headers?.Accept ?? 'application/octet-stream'
+  if (mimeType.includes('json')) return normalizeAssets(mediaType, await response.json())
+  const data = new Uint8Array(await response.arrayBuffer())
+  return [{ mediaType, type: 'binary', data, mimeType }]
+}
+
 async function fetchResultAssets(
   provider: ManifestProvider,
   mediaType: 'image' | 'video' | 'audio',
@@ -38,17 +66,9 @@ async function fetchResultAssets(
 ): Promise<MediaAsset[]> {
   const result = provider.result
   if (!result?.path) return []
-  const url = `${provider.baseUrl}${renderPath(result.path, ctx)}`
-  const response = await context.tool.fetch(url, {
-    method: result.method || 'GET',
-    headers: { Authorization: `Bearer ${context.config.apiKey ?? ''}`, ...(result.headers ?? {}) },
-    signal: context.signal,
-  })
-  if (!response.ok) return []
-  const mimeType = response.headers.get('content-type') ?? result.headers?.Accept ?? 'application/octet-stream'
-  if (mimeType.includes('json')) return normalizeAssets(mediaType, await response.json())
-  const data = new Uint8Array(await response.arrayBuffer())
-  return [{ mediaType, type: 'binary', data, mimeType }]
+  const response = await requestResultDocument(result, provider.baseUrl, ctx, context)
+  if (!response) return []
+  return decodeResultResponse(response, mediaType, result)
 }
 
 /**
@@ -60,7 +80,7 @@ export const POLL_INTERVAL_MS = 3_000
 export const POLL_MARGIN_MS = 30_000
 export const MAX_POLL_ATTEMPTS = Math.floor((GENERATION_BUDGET_MS - POLL_MARGIN_MS) / POLL_INTERVAL_MS)
 /** 收尾 cancel 只允许占用很小的时间窗，不能把整条调用链拖到 abort。 */
-export const CANCEL_TIMEOUT_MS = 10_000
+const CANCEL_TIMEOUT_MS = 10_000
 
 function errorMessage(obj: unknown): string {
   if (obj && typeof obj === 'object') {
@@ -90,6 +110,45 @@ export function renderPath(path: string, ctx: TemplateContext): string {
   })
 }
 
+/** Manifest-declared terminal states, as lookup tables instead of long equality chains. */
+const POLL_SUCCESS_STATUSES = new Set(['completed', 'success', 'succeeded', 'done'])
+const POLL_FAILURE_STATUSES = new Set(['failed', 'failure', 'error'])
+
+type PollVerdict = 'succeeded' | 'failed' | 'pending'
+
+function classifyPollStatus(lower: string): PollVerdict {
+  if (POLL_SUCCESS_STATUSES.has(lower)) return 'succeeded'
+  if (POLL_FAILURE_STATUSES.has(lower)) return 'failed'
+  return 'pending'
+}
+
+/** Read the manifest-declared status field (descriptor or path list) as a lowercase token. */
+function pollStatusOf(provider: ManifestProvider, pollJson: unknown, ctx: TemplateContext): string {
+  const status = readResponseField(
+    provider.response?.status ?? provider.response?.statusPaths,
+    pollJson,
+    ['status', 'state', 'data.status', 'data.state'],
+    ctx,
+  )
+  return String(status ?? '').toLowerCase()
+}
+
+/** One poll request: HTTP errors throw here, the payload goes back for status classification. */
+async function fetchPollOnce(
+  pollUrl: string,
+  apiKey: string,
+  context: ProviderContext,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const pollResponse = await context.tool.fetch(pollUrl, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal,
+  })
+  if (!pollResponse.ok) throw new Error(`Poll failed: HTTP ${pollResponse.status}`)
+  return pollResponse.json()
+}
+
 /**
  * Poll the manifest-declared task endpoint until the declared status reaches a
  * terminal state. Throws on an HTTP error, a failed status, or an exhausted
@@ -110,24 +169,10 @@ async function pollTask(
   // 轮询必须在 abort 之前留出收尾余量，从请求开始时刻计时。
   const pollDeadline = startedAt + GENERATION_BUDGET_MS - POLL_MARGIN_MS
   while (attempts < MAX_POLL_ATTEMPTS) {
-    const pollResponse = await context.tool.fetch(pollUrl, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal,
-    })
-    if (!pollResponse.ok) throw new Error(`Poll failed: HTTP ${pollResponse.status}`)
-    pollJson = await pollResponse.json()
-    const status = readResponseField(
-      provider.response?.status ?? provider.response?.statusPaths,
-      pollJson,
-      ['status', 'state', 'data.status', 'data.state'],
-      ctx,
-    )
-    const lower = String(status ?? '').toLowerCase()
-    if (lower === 'completed' || lower === 'success' || lower === 'succeeded' || lower === 'done') return pollJson
-    if (lower === 'failed' || lower === 'failure' || lower === 'error') {
-      throw new Error(`Task failed: ${errorMessage(pollJson)}`)
-    }
+    pollJson = await fetchPollOnce(pollUrl, apiKey, context, signal)
+    const verdict = classifyPollStatus(pollStatusOf(provider, pollJson, ctx))
+    if (verdict === 'succeeded') return pollJson
+    if (verdict === 'failed') throw new Error(`Task failed: ${errorMessage(pollJson)}`)
     attempts++
     const remaining = pollDeadline - Date.now()
     if (remaining <= 0) break
@@ -163,32 +208,17 @@ async function cancelTask(
   }
 }
 
-async function executeGeneration(
-  provider: LoadedProvider,
-  request: MediaRequest,
-  apiKey: string,
-  signal: AbortSignal,
-): Promise<MediaAsset[]> {
-  const startedAt = Date.now()
-  const p = provider.provider
-  const baseUrl = p.baseUrl
-  const mediaType =
-    p.response?.resultKind === 'audio'
-      ? 'audio'
-      : p.response?.resultKind === 'image'
-        ? 'image'
-        : p.response?.resultKind === 'video'
-          ? 'video'
-          : p.capabilities.includes('video')
-            ? 'video'
-            : p.capabilities.includes('image')
-              ? 'image'
-              : 'audio'
+/** Result media type: an explicit `resultKind` wins, then capability hints, then audio. */
+function resolveMediaType(p: ManifestProvider): MediaAsset['mediaType'] {
+  const kind = p.response?.resultKind
+  if (kind === 'audio' || kind === 'image' || kind === 'video') return kind
+  if (p.capabilities.includes('video')) return 'video'
+  if (p.capabilities.includes('image')) return 'image'
+  return 'audio'
+}
 
-  const ctx: TemplateContext = { request, response: {}, model: (request as Record<string, unknown>).model }
-  const body = interpret(p.create.body, ctx)
-
-  const context: ProviderContext = {
+function buildProviderContext(apiKey: string, signal: AbortSignal): ProviderContext {
+  return {
     config: { apiKey },
     signal,
     tool: {
@@ -196,12 +226,23 @@ async function executeGeneration(
       errorMessage: (obj) => errorMessage(obj),
     },
   }
+}
 
+/**
+ * Send the create request. multipart 的 boundary 由 fetch 依据 FormData 生成：
+ * 手写 Content-Type 会让 header 与请求体不一致，上游直接拒收。
+ */
+async function postCreate(
+  p: ManifestProvider,
+  body: unknown,
+  ctx: TemplateContext,
+  context: ProviderContext,
+  apiKey: string,
+  signal: AbortSignal,
+): Promise<Response> {
   const spec = createRequestSpec(p, ctx)
-  const createUrl = `${baseUrl}${renderPath(spec.path, ctx)}`
+  const createUrl = `${p.baseUrl}${renderPath(spec.path, ctx)}`
   const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}` }
-  // multipart 的 boundary 由 fetch 依据 FormData 生成：手写 Content-Type 会让
-  // header 与请求体不一致，上游直接拒收。
   if (!spec.multipart) headers['Content-Type'] = spec.contentType
   const response = await context.tool.fetch(createUrl, {
     method: p.create.method,
@@ -213,48 +254,79 @@ async function executeGeneration(
     const err = await response.text().catch(() => '')
     throw new Error(`Request failed: HTTP ${response.status} ${err}`)
   }
+  return response
+}
 
-  // Synchronous binary response (audio etc.)
-  if (p.response?.binaryPayload) {
-    const blob = await response.blob()
-    const data = new Uint8Array(await blob.arrayBuffer())
-    const mimeType = response.headers.get('content-type') ?? 'application/octet-stream'
-    return [{ mediaType, type: 'binary', data, mimeType } as MediaAsset]
+/** Synchronous binary response (audio etc.) */
+async function binaryAsset(response: Response, mediaType: MediaAsset['mediaType']): Promise<MediaAsset[]> {
+  const blob = await response.blob()
+  const data = new Uint8Array(await blob.arrayBuffer())
+  const mimeType = response.headers.get('content-type') ?? 'application/octet-stream'
+  return [{ mediaType, type: 'binary', data, mimeType } as MediaAsset]
+}
+
+function requireAssets(assets: MediaAsset[], payload: unknown): MediaAsset[] {
+  if (assets.length > 0) return assets
+  throw new Error(`No generation result returned: ${errorMessage(payload)}`)
+}
+
+/** Async task: read the taskId, poll to a terminal state, then extract assets from the poll payload. */
+async function runAsyncTask(
+  p: ManifestProvider,
+  json: unknown,
+  mediaType: MediaAsset['mediaType'],
+  ctx: TemplateContext,
+  context: ProviderContext,
+  apiKey: string,
+  signal: AbortSignal,
+  startedAt: number,
+): Promise<MediaAsset[]> {
+  const taskId = readResponseField(
+    p.response?.taskId ?? p.response?.taskIdPaths,
+    json,
+    ['id', 'taskId', 'task_id', 'data.id', 'data.task_id'],
+    ctx,
+  )
+  if (taskId == null) throw new Error(`No task id returned: ${errorMessage(json)}`)
+  const assetCtx = { ...ctx, taskId }
+  let pollJson: unknown
+  try {
+    pollJson = await pollTask(p, p.poll!, context, apiKey, assetCtx, signal, startedAt)
+  } catch (err) {
+    // 任务没有走到成功态才取消；成功后的取结果失败不值得再发一次 cancel。
+    await cancelTask(p, context, apiKey, assetCtx)
+    throw err
   }
+  const assets = extractAssets(mediaType, pollJson, p, assetCtx)
+  if (assets.length > 0) return assets
+  return requireAssets(await fetchResultAssets(p, mediaType, assetCtx, context), pollJson)
+}
+
+async function executeGeneration(
+  provider: LoadedProvider,
+  request: MediaRequest,
+  apiKey: string,
+  signal: AbortSignal,
+): Promise<MediaAsset[]> {
+  const startedAt = Date.now()
+  const p = provider.provider
+  const mediaType = resolveMediaType(p)
+
+  const ctx: TemplateContext = { request, response: {}, model: (request as Record<string, unknown>).model }
+  const body = interpret(p.create.body, ctx)
+  const context = buildProviderContext(apiKey, signal)
+
+  const response = await postCreate(p, body, ctx, context, apiKey, signal)
+
+  if (p.response?.binaryPayload) return binaryAsset(response, mediaType)
 
   const json = await response.json()
 
   // Async task: get taskId then poll.
-  if (p.poll) {
-    const taskId = readResponseField(
-      p.response?.taskId ?? p.response?.taskIdPaths,
-      json,
-      ['id', 'taskId', 'task_id', 'data.id', 'data.task_id'],
-      ctx,
-    )
-    if (taskId == null) {
-      throw new Error(`No task id returned: ${errorMessage(json)}`)
-    }
-    const assetCtx = { ...ctx, taskId }
-    let pollJson: unknown
-    try {
-      pollJson = await pollTask(p, p.poll, context, apiKey, assetCtx, signal, startedAt)
-    } catch (err) {
-      // 任务没有走到成功态才取消；成功后的取结果失败不值得再发一次 cancel。
-      await cancelTask(p, context, apiKey, assetCtx)
-      throw err
-    }
-    const assets = extractAssets(mediaType, pollJson, p, assetCtx)
-    if (assets.length > 0) return assets
-    const viaResult = await fetchResultAssets(p, mediaType, assetCtx, context)
-    if (viaResult.length > 0) return viaResult
-    throw new Error(`No generation result returned: ${errorMessage(pollJson)}`)
-  }
+  if (p.poll) return runAsyncTask(p, json, mediaType, ctx, context, apiKey, signal, startedAt)
 
   // Synchronous JSON response.
-  const syncAssets = extractAssets(mediaType, json, p, ctx)
-  if (syncAssets.length > 0) return syncAssets
-  throw new Error(`No generation result returned: ${errorMessage(json)}`)
+  return requireAssets(extractAssets(mediaType, json, p, ctx), json)
 }
 
 export async function generateMedia(providerId: string, request: MediaRequest, apiKey?: string): Promise<MediaAsset[]> {

@@ -16,6 +16,19 @@ export interface CreateRequestSpec {
 }
 
 /**
+ * Render one create-endpoint field (path or content type): a template
+ * descriptor wins over the static string, and a non-empty rendered value wins
+ * over the declared fallback.
+ */
+function renderDeclaredField(
+  template: TemplateNode | undefined,
+  fallback: string | undefined,
+  ctx: TemplateContext,
+): string {
+  return String(interpret(template ?? fallback ?? '', ctx) ?? fallback ?? '')
+}
+
+/**
  * Resolve the create endpoint and content type. Manifests may spell them as
  * static strings or as templates that depend on the request (openai-images
  * switches to `/v1/images/edits` + multipart only when `request.images` is
@@ -23,13 +36,10 @@ export interface CreateRequestSpec {
  */
 export function createRequestSpec(provider: ManifestProvider, ctx: TemplateContext): CreateRequestSpec {
   const create = provider.create
-  const path = String(interpret(create.pathTemplate ?? create.path ?? '', ctx) ?? create.path ?? '')
-  const contentType = String(
-    interpret(create.contentTypeTemplate ?? create.contentType ?? '', ctx) ?? create.contentType ?? '',
-  )
   const declaredFiles = create.files ?? []
+  const contentType = renderDeclaredField(create.contentTypeTemplate, create.contentType, ctx)
   return {
-    path,
+    path: renderDeclaredField(create.pathTemplate, create.path, ctx),
     contentType,
     multipart: declaredFiles.length > 0 && contentType.includes('multipart'),
   }

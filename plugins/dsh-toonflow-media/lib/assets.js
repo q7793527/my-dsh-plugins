@@ -1,4 +1,4 @@
-import { interpret } from "./template.js";
+import { interpret } from './template.js';
 /** Read one or more dotted paths, returning the first non-empty hit. */
 export function readPath(obj, paths) {
     if (obj == null)
@@ -6,12 +6,12 @@ export function readPath(obj, paths) {
     const candidates = Array.isArray(paths) ? paths : [paths];
     for (const path of candidates) {
         let value = obj;
-        for (const part of path.split(".")) {
+        for (const part of path.split('.')) {
             if (value == null)
                 break;
             value = value[part];
         }
-        if (value != null && value !== "")
+        if (value != null && value !== '')
             return value;
     }
     return undefined;
@@ -21,35 +21,35 @@ export function readPath(obj, paths) {
  * Asset shape stays { mediaType, type: "url" | "base64" | "binary", url | data | mimeType }.
  */
 export const ASSET_URL_PATHS = [
-    "url",
-    "dataUrl",
-    "data.url",
-    "result.url",
-    "output.url",
-    "image_url.url",
-    "image_url",
-    "imageUrl",
-    "image",
-    "video_url",
-    "videoUrl",
-    "result_url",
-    "audio_url",
-    "audioUrl",
+    'url',
+    'dataUrl',
+    'data.url',
+    'result.url',
+    'output.url',
+    'image_url.url',
+    'image_url',
+    'imageUrl',
+    'image',
+    'video_url',
+    'videoUrl',
+    'result_url',
+    'audio_url',
+    'audioUrl',
 ];
-export const ASSET_BASE64_PATHS = ["b64_json", "data.b64_json", "inlineData.data", "inline_data.data"];
-export const ASSET_MIME_PATHS = ["inlineData.mimeType", "inline_data.mime_type", "mimeType", "mime_type"];
+export const ASSET_BASE64_PATHS = ['b64_json', 'data.b64_json', 'inlineData.data', 'inline_data.data'];
+export const ASSET_MIME_PATHS = ['inlineData.mimeType', 'inline_data.mime_type', 'mimeType', 'mime_type'];
 function toMediaAsset(mediaType, value) {
-    if (typeof value === "string" && value)
-        return { mediaType, type: "url", url: value };
-    if (!value || typeof value !== "object")
+    if (typeof value === 'string' && value)
+        return { mediaType, type: 'url', url: value };
+    if (!value || typeof value !== 'object')
         return undefined;
     const url = readPath(value, ASSET_URL_PATHS);
-    if (typeof url === "string" && url)
-        return { mediaType, type: "url", url };
+    if (typeof url === 'string' && url)
+        return { mediaType, type: 'url', url };
     const data = readPath(value, ASSET_BASE64_PATHS);
-    if (typeof data === "string" && data) {
+    if (typeof data === 'string' && data) {
         const mimeType = readPath(value, ASSET_MIME_PATHS);
-        return { mediaType, type: "base64", data, mimeType: typeof mimeType === "string" ? mimeType : undefined };
+        return { mediaType, type: 'base64', data, mimeType: typeof mimeType === 'string' ? mimeType : undefined };
     }
     return undefined;
 }
@@ -67,7 +67,7 @@ export function normalizeAssets(mediaType, value) {
     return asset ? [asset] : [];
 }
 export function descriptorKeyFor(mediaType) {
-    return mediaType === "video" ? "videos" : mediaType === "audio" ? "audios" : "images";
+    return mediaType === 'video' ? 'videos' : mediaType === 'audio' ? 'audios' : 'images';
 }
 /**
  * Read a `response.*` field declared by a manifest. Manifests express these
@@ -76,10 +76,10 @@ export function descriptorKeyFor(mediaType) {
  * bound to `response` — handing it to `readPath` crashes on `path.split`.
  */
 export function readResponseField(field, payload, fallback, ctx) {
-    if (typeof field === "string" || Array.isArray(field)) {
+    if (typeof field === 'string' || Array.isArray(field)) {
         return readPath(payload, field);
     }
-    if (field && typeof field === "object") {
+    if (field && typeof field === 'object') {
         return interpret(field, { ...ctx, response: payload });
     }
     return readPath(payload, fallback);
@@ -94,7 +94,7 @@ export function readResponseField(field, payload, fallback, ctx) {
 export function extractAssets(mediaType, payload, provider, ctx) {
     const response = provider.response;
     const key = descriptorKeyFor(mediaType);
-    const declared = readResponseField(response?.[key] ?? (mediaType === "audio" ? response?.audio : undefined), payload, [], ctx);
+    const declared = readResponseField(response?.[key] ?? (mediaType === 'audio' ? response?.audio : undefined), payload, [], ctx);
     const assets = normalizeAssets(mediaType, declared);
     if (assets.length > 0)
         return assets;

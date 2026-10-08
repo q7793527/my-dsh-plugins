@@ -11,11 +11,11 @@ export function configPath(): string {
   return join(dshHome, 'toonflow-media', 'config.json')
 }
 
-export interface MediaConfig {
+interface MediaConfig {
   [providerId: string]: { apiKey: string }
 }
 
-export function loadConfig(): MediaConfig {
+function loadConfig(): MediaConfig {
   try {
     const p = configPath()
     const raw = readFileSync(p, 'utf8')
@@ -25,7 +25,7 @@ export function loadConfig(): MediaConfig {
   }
 }
 
-export function saveConfig(config: MediaConfig): void {
+function saveConfig(config: MediaConfig): void {
   const p = configPath()
   const dir = dirname(p)
   mkdirSync(dir, { recursive: true })
