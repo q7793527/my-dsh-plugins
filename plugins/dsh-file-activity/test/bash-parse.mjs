@@ -9,9 +9,19 @@
 import { test } from 'vitest'
 import assert from 'node:assert/strict'
 import { homedir } from 'node:os'
+import { resolve, normalize } from 'node:path'
 import { parseBashFileOps, splitSegments, tokenize } from '../lib/bash-parse.js'
 
 const P = '/work'
+
+/**
+ * 期望路径与实现同源解析（issue #355）：
+ *  - p：相对参数按 base 解析 → win `D:\work\…`、posix `/work/…`（实现 resolveSafe 同款）；
+ *  - abs：输入本身就是绝对 posix 路径 → 实现只做 normalize（win `\usr\…`、无盘符）。
+ * 两个平台下断言语义（「解析出的绝对路径」）都钉得住。
+ */
+const p = (...segments) => resolve(...segments)
+const abs = (path) => normalize(path)
 
 function ops(command, baseDir = P) {
   return parseBashFileOps(command, baseDir)
@@ -50,40 +60,40 @@ test('tokenize strips quotes and flags unsafe words', () => {
 })
 
 test('rm deletes; touch creates (write op); options are skipped', () => {
-  assert.deepEqual(pathsOf('rm a.js'), ['delete:/work/a.js'])
-  assert.deepEqual(pathsOf('rm -rf src/tmp.js'), ['delete:/work/src/tmp.js'])
-  assert.deepEqual(pathsOf('rm --force -- a.js b.js'), ['delete:/work/a.js', 'delete:/work/b.js'])
-  assert.deepEqual(pathsOf('touch dist/out.txt'), ['write:/work/dist/out.txt'])
-  assert.deepEqual(pathsOf('touch -d 2026-01-01 f.txt'), ['write:/work/f.txt'])
+  assert.deepEqual(pathsOf('rm a.js'), [`delete:${p('/work/a.js')}`])
+  assert.deepEqual(pathsOf('rm -rf src/tmp.js'), [`delete:${p('/work/src/tmp.js')}`])
+  assert.deepEqual(pathsOf('rm --force -- a.js b.js'), [`delete:${p('/work/a.js')}`, `delete:${p('/work/b.js')}`])
+  assert.deepEqual(pathsOf('touch dist/out.txt'), [`write:${p('/work/dist/out.txt')}`])
+  assert.deepEqual(pathsOf('touch -d 2026-01-01 f.txt'), [`write:${p('/work/f.txt')}`])
   assert.deepEqual(ops('rm'), [], 'rm without paths records nothing')
 })
 
 test('mv: source delete + destination write', () => {
-  assert.deepEqual(pathsOf('mv a.js b.js'), ['delete:/work/a.js', 'write:/work/b.js'])
-  assert.deepEqual(pathsOf('mv a b c'), ['delete:/work/a', 'delete:/work/b', 'write:/work/c'])
+  assert.deepEqual(pathsOf('mv a.js b.js'), [`delete:${p('/work/a.js')}`, `write:${p('/work/b.js')}`])
+  assert.deepEqual(pathsOf('mv a b c'), [`delete:${p('/work/a')}`, `delete:${p('/work/b')}`, `write:${p('/work/c')}`])
   assert.deepEqual(pathsOf('mv -t /work/dst a.js'), [], '-t target-directory variants are skipped (conservative)')
 })
 
 test('cp / install / tee write their destination', () => {
-  assert.deepEqual(pathsOf('cp a.js b.js'), ['write:/work/b.js'])
-  assert.deepEqual(pathsOf('install -m 755 a.js /usr/local/bin/a'), ['write:/usr/local/bin/a'])
-  assert.deepEqual(pathsOf('tee out.log err.log'), ['write:/work/out.log', 'write:/work/err.log'])
+  assert.deepEqual(pathsOf('cp a.js b.js'), [`write:${p('/work/b.js')}`])
+  assert.deepEqual(pathsOf('install -m 755 a.js /usr/local/bin/a'), [`write:${abs('/usr/local/bin/a')}`])
+  assert.deepEqual(pathsOf('tee out.log err.log'), [`write:${p('/work/out.log')}`, `write:${p('/work/err.log')}`])
 })
 
 test('sed only with -i (also -i.bak) writes the file', () => {
-  assert.deepEqual(pathsOf("sed -i 's/x/y/' f.txt"), ['write:/work/f.txt'])
-  assert.deepEqual(pathsOf("sed -i.bak 's/x/y/' f.txt"), ['write:/work/f.txt'])
+  assert.deepEqual(pathsOf("sed -i 's/x/y/' f.txt"), [`write:${p('/work/f.txt')}`])
+  assert.deepEqual(pathsOf("sed -i.bak 's/x/y/' f.txt"), [`write:${p('/work/f.txt')}`])
   assert.deepEqual(ops("sed 's/x/y/' f.txt"), [], 'sed without -i does not modify the file')
 })
 
 test('redirections: > / >> / 2> write the target; fd & /dev/null skipped', () => {
-  assert.deepEqual(pathsOf('echo hello > out.txt'), ['write:/work/out.txt'])
-  assert.deepEqual(pathsOf('echo x >> log.txt'), ['write:/work/log.txt'])
-  assert.deepEqual(pathsOf('node s.js > app.log 2>&1'), ['write:/work/app.log'])
-  assert.deepEqual(pathsOf('cmd 2> err.log'), ['write:/work/err.log'])
+  assert.deepEqual(pathsOf('echo hello > out.txt'), [`write:${p('/work/out.txt')}`])
+  assert.deepEqual(pathsOf('echo x >> log.txt'), [`write:${p('/work/log.txt')}`])
+  assert.deepEqual(pathsOf('node s.js > app.log 2>&1'), [`write:${p('/work/app.log')}`])
+  assert.deepEqual(pathsOf('cmd 2> err.log'), [`write:${p('/work/err.log')}`])
   assert.deepEqual(ops('ls > /dev/null'), [], '/dev/null is not a tracked file')
   assert.deepEqual(ops('echo x >&1'), [], 'fd redirection is not a file write')
-  assert.deepEqual(pathsOf('echo "a > b" > f.txt'), ['write:/work/f.txt'], 'quoted > is not a redirect')
+  assert.deepEqual(pathsOf('echo "a > b" > f.txt'), [`write:${p('/work/f.txt')}`], 'quoted > is not a redirect')
 })
 
 test('unknown / read-only commands record nothing without redirects', () => {
@@ -105,31 +115,31 @@ test('unsafe paths (variables / globs / substitution) are never recorded', () =>
 })
 
 test('cd segments update the base for the following segments', () => {
-  assert.deepEqual(pathsOf('cd sub && rm old.js'), ['delete:/work/sub/old.js'])
-  assert.deepEqual(pathsOf('cd /tmp/x; touch f'), ['write:/tmp/x/f'])
-  assert.deepEqual(pathsOf('cd ../up; rm a'), ['delete:/up/a'])
+  assert.deepEqual(pathsOf('cd sub && rm old.js'), [`delete:${p('/work/sub/old.js')}`])
+  assert.deepEqual(pathsOf('cd /tmp/x; touch f'), [`write:${p('/tmp/x/f')}`])
+  assert.deepEqual(pathsOf('cd ../up; rm a'), [`delete:${p('/up/a')}`])
 })
 
 test('~ expands to the home directory', () => {
-  assert.deepEqual(pathsOf('touch ~/x.txt'), [`write:${homedir()}/x.txt`])
-  assert.deepEqual(pathsOf('rm ~/.dsh/f.json'), [`delete:${homedir()}/.dsh/f.json`])
+  assert.deepEqual(pathsOf('touch ~/x.txt'), [`write:${p(homedir(), 'x.txt')}`])
+  assert.deepEqual(pathsOf('rm ~/.dsh/f.json'), [`delete:${p(homedir(), '.dsh', 'f.json')}`])
 })
 
 test('absolute and relative paths resolve against the base dir', () => {
-  assert.deepEqual(pathsOf('touch /tmp/x.bin'), ['write:/tmp/x.bin'])
-  assert.deepEqual(pathsOf('touch sub/f.txt', '/home/u/proj'), ['write:/home/u/proj/sub/f.txt'])
+  assert.deepEqual(pathsOf('touch /tmp/x.bin'), [`write:${abs('/tmp/x.bin')}`])
+  assert.deepEqual(pathsOf('touch sub/f.txt', '/home/u/proj'), [`write:${p('/home/u/proj/sub/f.txt')}`])
 })
 
 test('duplicate ops are deduped', () => {
-  assert.deepEqual(pathsOf('rm a && rm a'), ['delete:/work/a'])
-  assert.deepEqual(pathsOf('touch a && echo x > a'), ['write:/work/a'])
+  assert.deepEqual(pathsOf('rm a && rm a'), [`delete:${p('/work/a')}`])
+  assert.deepEqual(pathsOf('touch a && echo x > a'), [`write:${p('/work/a')}`])
 })
 
 test('prefix wrappers (sudo/env) and VAR= assignments are skipped', () => {
-  assert.deepEqual(pathsOf('sudo rm a'), ['delete:/work/a'])
-  assert.deepEqual(pathsOf('env FOO=1 rm a'), ['delete:/work/a'])
-  assert.deepEqual(pathsOf('FOO=bar touch a'), ['write:/work/a'])
-  assert.deepEqual(pathsOf('nohup cp a b &'), ['write:/work/b'])
+  assert.deepEqual(pathsOf('sudo rm a'), [`delete:${p('/work/a')}`])
+  assert.deepEqual(pathsOf('env FOO=1 rm a'), [`delete:${p('/work/a')}`])
+  assert.deepEqual(pathsOf('FOO=bar touch a'), [`write:${p('/work/a')}`])
+  assert.deepEqual(pathsOf('nohup cp a b &'), [`write:${p('/work/b')}`])
 })
 
 console.log('ALL BASH-PARSE TESTS PASSED')

@@ -23,7 +23,8 @@ import fs from 'node:fs'
 /** Extract the STYLES template string from the client bundle source. */
 function loadStyles() {
   const src = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
-  const m = src.match(/const STYLES = `([\s\S]*?)`\n/)
+  // `\r?\n`（issue #355）：win autocrlf checkout 下行尾是 CRLF，`\n` 锚会静默失配
+  const m = src.match(/const STYLES = `([\s\S]*?)`\r?\n/)
   assert.ok(m, 'STYLES template string must exist in client.js')
   return m[1]
 }

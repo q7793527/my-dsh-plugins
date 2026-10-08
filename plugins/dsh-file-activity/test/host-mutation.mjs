@@ -8,7 +8,7 @@ import { test, afterAll } from 'vitest'
 import { settle, waitFileContains } from './lib/settle.mjs'
 import assert from 'node:assert/strict'
 import { rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, normalize } from 'node:path'
 import { dirSync } from 'tmp'
 import { apply } from '../lib/index.js'
 import { sessionFromFile } from './state-file.mjs'
@@ -16,6 +16,16 @@ import { sessionFromFile } from './state-file.mjs'
 const dir = dirSync({ unsafeCleanup: true, prefix: 'dfa-mutation-test-' }).name
 process.env.DSH_HOME = dir
 const statePath = join(dir, 'file-activity.json')
+
+/**
+ * 与实现 resolveSafe 同源的期望路径（issue #355）：
+ *  - p：相对参数按 cwd/workdir 解析 → win `D:\wd\…`、posix `/wd/…`；
+ *  - abs：命令里的绝对 posix 参数 → 实现只 normalize → win `\work\…`（无盘符）。
+ * store 原样保存 observed path，bash 解析产物是 win 形态——两边必须用同一
+ * 形态构造，否则 win 上是两个不同的 key（delete 摘不掉、查询命不中）。
+ */
+const p = (...segments) => resolve(...segments)
+const abs = (path) => normalize(path)
 
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true })
@@ -753,36 +763,48 @@ test('valid JSON body over the size limit is rejected (400)', async () => {
 })
 
 test('media route authorizes paths present only in recent (counts absent)', async () => {
-  // seed state: the path is in recent history but NOT in counts — the recent
-  // branch of isRecordedPath must authorize it (→ stat fails → 404, not 403)
-  writeFileSync(
-    statePath,
-    JSON.stringify({
-      version: 1,
-      sessions: {
-        'recent-only': {
-          known: {},
-          counts: {},
-          recent: [{ path: '/work/only-recent.txt', op: 'read', time: 1 }],
+  // 测试隔离（issue #355）：本用例之前与全文件共享 statePath，而前一个测试
+  // 的 store 还挂着 ≤500ms 的防抖 flush/compact（lib/persist.js FLUSH_MS），
+  // 可能在下面写入 seed 之后才落盘，把 seed 覆盖/污染 → boot 加载不到
+  // recent 记录 → 偶发 403 而非 404（本地实测 1/3 flaky，stryker dry run
+  // 的初始运行也因此翻车）。改用独立 DSH_HOME 彻底隔离残留 store 的写入，
+  // 断言语义不变：recent-only → 404（授权但文件缺失），unrecorded → 403。
+  const seedHome = dirSync({ unsafeCleanup: true, prefix: 'dfa-recent-only-' }).name
+  const prevHome = process.env.DSH_HOME
+  process.env.DSH_HOME = seedHome
+  try {
+    writeFileSync(
+      join(seedHome, 'file-activity.json'),
+      JSON.stringify({
+        version: 1,
+        sessions: {
+          'recent-only': {
+            known: {},
+            counts: {},
+            recent: [{ path: '/work/only-recent.txt', op: 'read', time: 1 }],
+          },
         },
-      },
-    }),
-    'utf8',
-  )
-  const { getMediaRoute } = await boot()
-  const res = makeResponse()
-  await getMediaRoute().handler(
-    makeRequest('GET', '/file-activity/file?sessionId=recent-only&path=%2Fwork%2Fonly-recent.txt'),
-    res,
-  )
-  assert.equal(res._status, 404, 'recent-only path authorized but file missing')
-  // and an unrecorded path stays 403
-  const res2 = makeResponse()
-  await getMediaRoute().handler(
-    makeRequest('GET', '/file-activity/file?sessionId=recent-only&path=%2Fwork%2Fother.txt'),
-    res2,
-  )
-  assert.equal(res2._status, 403, 'unrecorded path refused')
+      }),
+      'utf8',
+    )
+    const { getMediaRoute } = await boot()
+    const res = makeResponse()
+    await getMediaRoute().handler(
+      makeRequest('GET', '/file-activity/file?sessionId=recent-only&path=%2Fwork%2Fonly-recent.txt'),
+      res,
+    )
+    assert.equal(res._status, 404, 'recent-only path authorized but file missing')
+    // and an unrecorded path stays 403
+    const res2 = makeResponse()
+    await getMediaRoute().handler(
+      makeRequest('GET', '/file-activity/file?sessionId=recent-only&path=%2Fwork%2Fother.txt'),
+      res2,
+    )
+    assert.equal(res2._status, 403, 'unrecorded path refused')
+  } finally {
+    process.env.DSH_HOME = prevHome
+    rmSync(seedHome, { recursive: true, force: true })
+  }
 })
 
 test('media errors carry a message in the body', async () => {
@@ -863,14 +885,15 @@ function emitPreExecute(ctx, name, sessionId, command, extraArgs) {
 
 test('tools/pre-execute: bash rm records a delete and drops the file from stats', async () => {
   const { ctx, getRoute } = await boot()
-  emitObserved(ctx, 'read', 'bash-s', '/work/gone.js')
+  const gone = abs('/work/gone.js')
+  emitObserved(ctx, 'read', 'bash-s', gone)
   await settle()
   await emitPreExecute(ctx, 'bash', 'bash-s', 'rm -f /work/gone.js')
   await settle()
   const stats = await callRoute(getRoute, 'GET', '/file-activity/api/stats?sessionId=bash-s')
-  assert.equal(stats.json.value.counts['/work/gone.js'], undefined, 'deleted file removed from stats')
+  assert.equal(stats.json.value.counts[gone], undefined, 'deleted file removed from stats')
   assert.ok(
-    stats.json.value.recent.some((e) => e.path === '/work/gone.js' && e.op === 'delete'),
+    stats.json.value.recent.some((e) => e.path === gone && e.op === 'delete'),
     'delete history entry present',
   )
 })
@@ -882,10 +905,10 @@ test('tools/pre-execute: touch/redirect create; mv maps source delete + dest cre
   await settle()
   const stats = await callRoute(getRoute, 'GET', '/file-activity/api/stats?sessionId=bash-s2')
   const counts = stats.json.value.counts
-  assert.equal(counts['/work/new.txt'].create, 1, 'touch maps to create')
-  assert.equal(counts['/work/out.txt'].create, 1, 'redirect maps to create')
-  assert.equal(counts['/work/b.js'].create, 1, 'mv destination maps to create')
-  assert.equal(counts['/work/a.js'], undefined, 'mv source removed from stats')
+  assert.equal(counts[abs('/work/new.txt')].create, 1, 'touch maps to create')
+  assert.equal(counts[abs('/work/out.txt')].create, 1, 'redirect maps to create')
+  assert.equal(counts[abs('/work/b.js')].create, 1, 'mv destination maps to create')
+  assert.equal(counts[abs('/work/a.js')], undefined, 'mv source removed from stats')
 })
 
 test('tools/pre-execute: non-bash tools and unsafe/unknown commands record nothing', async () => {
@@ -930,20 +953,21 @@ test('tools/pre-execute: relative paths resolve against the session cwd', async 
   await settle()
   const stats = await callRoute(() => apiHolder5.get(), 'GET', '/file-activity/api/stats?sessionId=rel-s')
   assert.ok(
-    stats.json.value.recent.some((e) => e.path === '/proj/tmp/old.txt' && e.op === 'delete'),
+    stats.json.value.recent.some((e) => e.path === p('/proj', 'tmp/old.txt') && e.op === 'delete'),
     'relative path resolved against session cwd',
   )
 })
 
 test('media route denies a path whose only record is a delete', async () => {
   const { ctx, getMediaRoute } = await boot()
-  emitObserved(ctx, 'read', 'gone-s', '/work/byebye.txt')
+  const byebye = abs('/work/byebye.txt')
+  emitObserved(ctx, 'read', 'gone-s', byebye)
   await settle()
   await emitPreExecute(ctx, 'bash', 'gone-s', 'rm /work/byebye.txt')
   await settle()
   const res = makeResponse()
   await getMediaRoute().handler(
-    makeRequest('GET', '/file-activity/file?sessionId=gone-s&path=%2Fwork%2Fbyebye.txt'),
+    makeRequest('GET', `/file-activity/file?sessionId=gone-s&path=${encodeURIComponent(byebye)}`),
     res,
   )
   assert.equal(res._status, 403, 'deleted file no longer authorizes media preview')
@@ -959,7 +983,7 @@ test('tools/pre-execute: non-string command and workdir branch coverage', async 
   await settle()
   const stats = await callRoute(getRoute, 'GET', '/file-activity/api/stats?sessionId=bash-s4')
   assert.ok(
-    stats.json.value.recent.some((e) => e.path === '/wd/tmp/x.txt' && e.op === 'delete'),
+    stats.json.value.recent.some((e) => e.path === p('/wd', 'tmp/x.txt') && e.op === 'delete'),
     'workdir overrides session cwd',
   )
   assert.equal(stats.json.value.recent.length, 1, 'only the workdir-resolved op recorded')

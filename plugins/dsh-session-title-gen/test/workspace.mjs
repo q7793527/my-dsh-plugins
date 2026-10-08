@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { mkdirSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { dirSync } from 'tmp'
 import { workspaceNameOf } from '../lib/workspace.js'
 
@@ -39,7 +39,8 @@ describe('workspaceNameOf', () => {
   it('无 .git 祖先时返回 cwd 自身 basename', async () => {
     const dir = dirSync({ unsafeCleanup: true, prefix: 'stg-ws-' }).name
     try {
-      expect(await workspaceNameOf(dir)).toBe(dir.split('/').at(-1))
+      // basename 跨平台取末段（issue #355：win 临时目录是 `\` 分隔，split('/') 会得到整条路径）
+      expect(await workspaceNameOf(dir)).toBe(basename(dir))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

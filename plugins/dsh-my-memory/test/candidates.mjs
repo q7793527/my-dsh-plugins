@@ -164,8 +164,10 @@ test('candidateMemoryFile lives under $DSH_HOME/memory', () => {
   process.env.DSH_HOME = dir
   try {
     const file = candidateMemoryFile()
-    assert.ok(file.startsWith(`${dir}/memory/`), `under memory dir: ${file}`)
-    assert.ok(file.endsWith('candidates.json'))
+    // 路径分隔符归一后比较（issue #355：win 产 `\`，断言语义是「位于 memory 目录下」）
+    const norm = (p) => p.replace(/\\/g, '/')
+    assert.ok(norm(file).startsWith(norm(`${dir}/memory/`)), `under memory dir: ${file}`)
+    assert.ok(norm(file).endsWith('candidates.json'))
   } finally {
     process.env.DSH_HOME = saved
   }

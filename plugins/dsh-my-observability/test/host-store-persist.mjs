@@ -220,8 +220,10 @@ test('persist io 错误降级：只读目录（EACCES）不致崩溃且告警「
 })
 
 test('jsonlFile/legacyFile 路径形态', () => {
-  const jsonl = jsonlFile()
-  const legacy = legacyFile()
+  // 行尾/分隔符归一后比较（issue #355：win 产 `\observability\...`，语义仍是「尾部路径形态」）
+  const norm = (p) => p.replace(/\\/g, '/')
+  const jsonl = norm(jsonlFile())
+  const legacy = norm(legacyFile())
   assert.ok(jsonl.endsWith('/observability/audit.jsonl'), 'jsonl path shape')
   assert.ok(legacy.endsWith('/observability/audit.json'), 'legacy path shape')
 })

@@ -41,7 +41,11 @@ test('projectMemoryFileOf resolves under $DSH_HOME/memory/projects (issue #108)'
   const { mkdirSync } = await import('node:fs')
   mkdirSync(join(proj, '.git'), { recursive: true })
   const file = await projectMemoryFileOf(proj)
-  assert.ok(file.startsWith(join(dir, 'memory', 'projects') + '/'), `centralized under DSH_HOME: ${file}`)
+  // 分隔符归一后比较（issue #355：win 产 `\`，断言语义是「位于 DSH_HOME 的 memory/projects 下」）
+  assert.ok(
+    file.replace(/\\/g, '/').startsWith(join(dir, 'memory', 'projects').replace(/\\/g, '/') + '/'),
+    `centralized under DSH_HOME: ${file}`,
+  )
   assert.ok(file.endsWith('.json'))
   assert.ok(!file.includes(proj), 'project root no longer contains the memory file')
 })
@@ -223,7 +227,8 @@ test('globalMemoryFile falls back to ~/.dsh when DSH_HOME is unset', () => {
   delete process.env.DSH_HOME
   try {
     const file = globalMemoryFile()
-    assert.ok(file.endsWith('/.dsh/memory.json'), `fallback path: ${file}`)
+    // 分隔符归一（issue #355：win 产 `\`，断言语义是「位于 home 下的 .dsh/memory.json」）
+    assert.ok(file.replace(/\\/g, '/').endsWith('/.dsh/memory.json'), `fallback path: ${file}`)
   } finally {
     process.env.DSH_HOME = saved
   }

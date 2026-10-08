@@ -407,7 +407,8 @@ test('currentProfile honors --profile and profileDirOf falls back to home', () =
   process.argv = saved
   const home = process.env.DSH_HOME
   delete process.env.DSH_HOME
-  assert.ok(profileDirOf('web').endsWith('.dsh/profiles/web'), 'fallback to ~/.dsh/profiles')
+  // 分隔符归一（issue #355：win 产 `\`，断言语义是「fallback 到 home 下 .dsh/profiles/web」）
+  assert.ok(profileDirOf('web').replace(/\\/g, '/').endsWith('.dsh/profiles/web'), 'fallback to ~/.dsh/profiles')
   if (home !== undefined) process.env.DSH_HOME = home
 })
 
