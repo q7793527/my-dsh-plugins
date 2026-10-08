@@ -45,7 +45,8 @@ test('viewRootsOf(cwd) adds the project roots', async () => {
 test('scanSkillRoots returns valid skills and classifies every issue reason', async () => {
   const skillsDir = join(dir, 'skills')
   mkdirSync(skillsDir, { recursive: true })
-  symlinkSync(join(skillsDir, 'nowhere'), join(skillsDir, 'broken-link'))
+  // junction（issue #355）：win 非特权 symlink EPERM；junction 对 lstat 仍呈现 isSymbolicLink
+  symlinkSync(join(skillsDir, 'nowhere'), join(skillsDir, 'broken-link'), 'junction')
   writeFileSync(join(skillsDir, 'no-frontmatter.md'), 'hello')
   mkdirSync(join(skillsDir, 'empty-dir'))
   mkdirSync(join(skillsDir, 'good-skill'))
@@ -108,7 +109,7 @@ test('scanSkillRoots follows symlinks to valid skill directories', async () => {
   mkdirSync(targetDir, { recursive: true })
   writeFileSync(join(targetDir, 'SKILL.md'), '---\nname: linked-skill\ndescription: 链接\n---\nbody')
   mkdirSync(skillsDir, { recursive: true })
-  symlinkSync(targetDir, join(skillsDir, 'linked-skill'))
+  symlinkSync(targetDir, join(skillsDir, 'linked-skill'), 'junction') // win: junction；POSIX 忽略第三参
 
   const { skills, issues } = await scanSkillRoots([{ path: skillsDir, source: 'user-dsh' }])
   assert.deepEqual(issues, [], 'valid symlink is not an issue')

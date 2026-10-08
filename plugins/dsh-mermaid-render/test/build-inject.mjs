@@ -101,7 +101,9 @@ describe('引擎外部化（按需加载替代 base64 内联）', () => {
   it('asset 与冻结的 SHA256 一致（失败时只报字节数与文件头，不灌日志）', () => {
     const asset = readFileSync(ASSET_PATH)
     const head = (buf) => JSON.stringify(buf.subarray(0, 48).toString('utf8'))
-    const sha = createHash('sha256').update(asset).digest('hex')
+    // 行尾归一后再哈希（issue #355）：冻结值按 blob 内容（LF）计算；win32 autocrlf=true 的
+    // checkout 把 asset 读成 CRLF，逐字节哈希必然 mismatch（build.mjs 已同口径归一）。
+    const sha = createHash('sha256').update(asset.toString('utf8').replace(/\r\n/g, '\n')).digest('hex')
     // 不是「放宽」：这正是原来 asset.equals(vendor) 的语义，只是把参照物从"另一份可被同时修改的
     // 文件"换成不可静默改动的常量，并保持失败时的信息量可控。
     expect(

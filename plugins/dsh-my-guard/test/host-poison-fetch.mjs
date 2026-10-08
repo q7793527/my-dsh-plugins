@@ -294,7 +294,8 @@ test('#105 远端 tarball 含逃逸路径时整包拒绝（远端链路与本地
     const scanned = await resolveAndScan('evil-pkg', { registryBase: base })
     assert.equal(scanned.ok, false)
     assert.match(scanned.error, /拒绝解包/)
-    assert.match(scanned.error, /绝对路径/)
+    // win 上 entry 是盘符路径 → 实现按「盘符」类拒绝（盘符即 win 形态的绝对路径，issue #355）
+    assert.match(scanned.error, /绝对路径|盘符/)
     assert.equal(existsSync(escaped), false, '逃逸目标不得被写出')
   })
 })

@@ -210,7 +210,8 @@ test('stateFile: uses DSH_HOME when set', () => {
   process.env.DSH_HOME = '/tmp/dsh-guard-home-test'
   try {
     const file = stateFile()
-    assert.ok(file.startsWith('/tmp/dsh-guard-home-test'), `unexpected: ${file}`)
+    // 分隔符归一（issue #355：win 会把 '/tmp/…' normalize 成 '\tmp\…'，语义仍是「位于 DSH_HOME 下」）
+    assert.ok(file.replace(/\\/g, '/').startsWith('/tmp/dsh-guard-home-test'), `unexpected: ${file}`)
   } finally {
     if (oldHome !== undefined) process.env.DSH_HOME = oldHome
     else delete process.env.DSH_HOME

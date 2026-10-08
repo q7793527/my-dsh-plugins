@@ -407,6 +407,8 @@ test('host smoke suite', { timeout: 30000 }, async () => {
         true,
         'api-added entry promoted',
       )
+      // promote 清文件走 watch（win 可能降级为 4s poll，issue #355）→ 等待落盘而不是同 tick 读
+      await waitFor(() => JSON.parse(readFileSync(stagedFile(), 'utf8')).length === 0, 10000)
       assert.equal(JSON.parse(readFileSync(stagedFile(), 'utf8')).length, 0, 'api entry promoted out of the file')
 
       // remove a promoted entry (keep stays)

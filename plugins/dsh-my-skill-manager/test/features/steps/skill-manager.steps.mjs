@@ -198,7 +198,7 @@ Then('刷新结果包含新扫描到的 skill {string}', function (name) {
 Given('全局 skill 目录存在异常条目 {string}（符号链接无法解析）', function (name) {
   const skillsDir = join(this.dir, 'skills')
   mkdirSync(skillsDir, { recursive: true })
-  symlinkSync(join(skillsDir, 'nowhere'), join(skillsDir, name))
+  symlinkSync(join(skillsDir, 'nowhere'), join(skillsDir, name), 'junction') // win: junction（#355，无特权 symlink EPERM）
 })
 
 Given('存在缺少 frontmatter 的条目 {string}', function (name) {

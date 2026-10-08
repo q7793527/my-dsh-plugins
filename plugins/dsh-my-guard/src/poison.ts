@@ -17,7 +17,7 @@ import { constants, open, readdir, rm } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { Readable } from 'node:stream'
-import { join, basename, extname } from 'node:path'
+import { join, basename, extname, isAbsolute } from 'node:path'
 import { execFile } from 'node:child_process'
 import tmp from 'tmp'
 import {
@@ -161,7 +161,9 @@ export async function resolveAndScan(
 export function localPathOf(pkg: string): string {
   const candidate = pkg.startsWith('link:') ? pkg.slice(5) : pkg
   if (candidate === '') return ''
-  if (candidate.startsWith('/') || candidate.startsWith('.')) return candidate
+  // isAbsolute（issue #355）：posix 只看 '/' 前缀会漏掉 win 的 `C:\…` 本地路径，
+  // 导致 win 上 /scan API 把本地目录当包名去 registry 解析 → 400。
+  if (isAbsolute(candidate) || candidate.startsWith('/') || candidate.startsWith('.')) return candidate
   return ''
 }
 
@@ -189,7 +191,9 @@ async function scanDir(root: string, dir: string, handle: ScanHandle): Promise<v
 async function scanFile(root: string, full: string, handle: ScanHandle): Promise<void> {
   handle.files += 1
   const name = basename(full)
-  const rel = full.slice(root.length + 1)
+  // findings 内的相对路径统一 posix 分隔符（issue #355：win 解析出 `keys\rsa.pem`
+  // 会让「文件被点名」的断言/前端展示在两个平台分裂）
+  const rel = full.slice(root.length + 1).replace(/\\/g, '/')
   checkSuspiciousFileNames(name, rel, handle)
   const text = await readText(full, handle)
   if (text === null) return

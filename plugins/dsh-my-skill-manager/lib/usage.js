@@ -16,6 +16,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { atomicWriteJson, createWriteScheduler } from 'dsh-shared';
 /** 防抖间隔（ms）。 */
 const PERSIST_DEBOUNCE_MS = 500;
@@ -24,9 +25,10 @@ const PERSIST_MIN_INTERVAL_MS = 1000;
 /** 全局使用统计文件：$DSH_HOME/skills.usage.json（fallback ~/.dsh/...）。 */
 export function usageFile() {
     const home = process.env.DSH_HOME;
+    // join 保证 win 上产原生分隔符（`${home}/...` 裸拼会得到混合路径，issue #355）
     if (typeof home === 'string' && home !== '')
-        return `${home}/skills.usage.json`;
-    return `${homedir()}/.dsh/skills.usage.json`;
+        return join(home, 'skills.usage.json');
+    return join(homedir(), '.dsh', 'skills.usage.json');
 }
 /** 创建使用统计 store（异步加载启动；readyPromise 在加载完成后 resolve）。 */
 export function createUsageStore({ file, logger }) {

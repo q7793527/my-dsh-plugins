@@ -198,6 +198,17 @@ function startWatchers(ctx, shared) {
                 return;
             void shared.scanStaged().catch(() => { });
         });
+        shared.watcher.on('error', () => {
+            // 运行中 watch 失败（issue #355：win 上目标目录被删/权限变化会从 onchange 抛 EPERM，
+            // 无 'error' 监听就是 uncaught）：关掉残废 watcher 交给下方无条件注册的 poll 兜底。
+            try {
+                shared.watcher?.close();
+            }
+            catch {
+                /* 已经关了 */
+            }
+            shared.watcher = null;
+        });
     }
     catch {
         shared.watcher = null;

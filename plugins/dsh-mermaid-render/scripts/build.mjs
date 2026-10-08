@@ -110,7 +110,13 @@ const umd = engineBytes.toString('utf8')
 if (!umd.includes('window') && !umd.includes('globalThis')) {
   throw new Error(`assets/mermaid-${MERMAID_VERSION}.min.js does not look like the UMD build`)
 }
-const engineSha = createHash('sha256').update(engineBytes).digest('hex')
+// 行尾归一后再哈希（issue #355）：MERMAID_SHA256 是按 blob 内容（LF）冻结的；win32
+// `core.autocrlf=true` 的 checkout 会把文件读成 CRLF，逐字节哈希必然 mismatch——本机 build
+// 永远跑不过、门禁在镜像里必然红（Linux CI 是 LF 不受影响）。归一只消除行尾，引擎内容
+// 任何字节变化（含被 prettier 美化重排）仍然会被抓出，防无声替换的语义不变。
+const engineSha = createHash('sha256')
+  .update(Buffer.from(umd.replace(/\r\n/g, '\n')))
+  .digest('hex')
 if (engineSha !== MERMAID_SHA256) {
   throw new Error(
     `assets/mermaid-${MERMAID_VERSION}.min.js SHA256 mismatch\n` +

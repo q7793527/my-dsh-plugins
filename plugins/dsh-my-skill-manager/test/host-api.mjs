@@ -465,8 +465,8 @@ test('GET /list reports missing skill entries with reasons', async () => {
   const { getRoute } = await boot()
   const skillsDir = join(dir, 'skills')
   mkdirSync(skillsDir, { recursive: true })
-  // 1. broken symlink → broken-symlink
-  symlinkSync(join(skillsDir, 'nowhere'), join(skillsDir, 'broken-link'))
+  // 1. broken symlink → broken-symlink（junction：win 非特权 symlink EPERM，issue #355）
+  symlinkSync(join(skillsDir, 'nowhere'), join(skillsDir, 'broken-link'), 'junction')
   // 2. .md without frontmatter → missing-frontmatter
   writeFileSync(join(skillsDir, 'no-frontmatter.md'), 'hello')
   // 3. directory without SKILL.md → missing-skills-md
@@ -500,7 +500,7 @@ test('project view diagnostics only scan the project roots', async () => {
   // 全局 root 下的坏条目：项目视图不应报告它（catalog 已过滤为项目条目）
   const skillsDir = join(dir, 'skills')
   mkdirSync(skillsDir, { recursive: true })
-  symlinkSync(join(skillsDir, 'nowhere'), join(skillsDir, 'global-broken'))
+  symlinkSync(join(skillsDir, 'nowhere'), join(skillsDir, 'global-broken'), 'junction') // win: junction（#355）
   // 项目 root 下的坏条目：项目视图应报告它
   const projSkills = join(dir, 'proj', '.dsh', 'skills')
   mkdirSync(projSkills, { recursive: true })

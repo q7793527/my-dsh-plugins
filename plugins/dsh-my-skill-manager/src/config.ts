@@ -38,8 +38,9 @@ export type ConfigScope = 'global' | 'project'
 /** Global config file: $DSH_HOME/skills.enabled.json (fallback ~/.dsh/...). */
 export function globalConfigFile(): string {
   const home = process.env.DSH_HOME
-  if (typeof home === 'string' && home !== '') return `${home}/skills.enabled.json`
-  return `${homedir()}/.dsh/skills.enabled.json`
+  // join 保证 win 上产原生分隔符（`${home}/...` 裸拼会得到混合路径，issue #355）
+  if (typeof home === 'string' && home !== '') return join(home, 'skills.enabled.json')
+  return join(homedir(), '.dsh', 'skills.enabled.json')
 }
 
 /** Empty config document. */
