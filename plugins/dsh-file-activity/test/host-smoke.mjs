@@ -63,6 +63,8 @@ function captureRoute(prefix) {
 const dir = tmp.dirSync({ prefix: 'dsh-file-activity-test-', unsafeCleanup: true }).name
 process.env.DSH_HOME = dir
 const statePath = join(dir, 'file-activity.json')
+/** 本文件 boot 过的全部 ctx：finally 统一 closeBooted（先关持久化再删目录）。 */
+const bootedCtxs = []
 
 /** Build a plugin context, run apply, wait for state load, return handles. */
 async function boot() {
@@ -92,6 +94,7 @@ async function boot() {
     },
   }
   const store = apply(ctx)
+  bootedCtxs.push(ctx)
   // wait for async state load
   await store.whenReady()
   return { ctx, getRoute: () => apiHolder.get(), getMediaRoute: () => mediaHolder.get() }
@@ -123,6 +126,92 @@ async function callMedia(getMediaRoute, method, url) {
   await route.handler(makeRequest(method, url), res)
   return { status: res._status, headers: res._headers, body: res._body }
 }
+
+// ── 防回归（issue #355）：rmSync 前必须先关闭所有 store ─────────────────────
+// stryker 初始运行实测失败：`ENOTEMPTY, Directory not empty`（host smoke suite）。
+// 根因：测试 finally 直接 rmSync(dir)，而各次 boot() 的 store 持久化仍留有
+// 线程池中的 pending 写（500ms 防抖 flush / dirtyChain append）——后台写线程
+// 与同步目录删除真并发，删完又被写回 → ENOTEMPTY。修复：先 await 全部
+// disposer（lib/index.js 注册的 persistence teardown = flush + dispose），
+// 确认没有 pending 写后再删目录；删除侧再留 ENOTEMPTY/EBUSY 短重试兜底。
+/** 依序 await 每个 boot 过的 ctx 的持久化 disposer；单个失败不断后续。 */
+async function closeBooted(ctxs) {
+  for (const ctx of ctxs) {
+    for (const entry of ctx.effectCallbacks ?? []) {
+      if (typeof entry.disposer !== 'function') continue
+      try {
+        await entry.disposer()
+      } catch {
+        // 关闭失败（多半是文件已被删/后台 flush 报错）不阻断其余清理
+      }
+    }
+  }
+}
+
+/** 删除临时目录：Windows 上线程池残留写可能让 rmSync 偶发 ENOTEMPTY/EBUSY，短重试兜底。 */
+async function rmDirWithRetry(dir, attempts = 6) {
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+      return
+    } catch (error) {
+      const retriable = ['ENOTEMPTY', 'EBUSY', 'EPERM'].includes(error?.code)
+      if (!retriable || i === attempts - 1) throw error
+      // sleep-ok: Windows 句柄释放时序是 OS 行为，无法用条件轮询观测句柄状态，只能退避后重试
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+  }
+}
+
+test('cleanup helper awaits every store disposer before rm', async () => {
+  const order = []
+  const mkCtx = (label, { fail = false } = {}) => ({
+    effectCallbacks: [
+      // 普通 callback（非 disposer）不应被执行
+      { label: `${label}:callback`, callback: () => order.push(`bad-callback-${label}`) },
+      {
+        label: `${label}:disposer`,
+        disposer: async () => {
+          order.push(label)
+          if (fail) throw new Error(`${label} dispose boom`)
+        },
+      },
+    ],
+  })
+  // 中间 disposer 抛错也不能跳过后续（清理必须尽力完成），且必须依序执行：
+  await closeBooted([mkCtx('a'), mkCtx('b', { fail: true }), mkCtx('c')])
+  assert.deepEqual(order, ['a', 'b', 'c'], 'disposer 全部依序执行、失败不断后续')
+  assert.ok(!order.includes('bad-callback-a'), '非 disposer 条目不被执行')
+
+  // 「被 await」的确定性证明（无固定 sleep）：disposer 卡在 gate 上，
+  // release 前 closeBooted 不得返回；release 后返回时异步 flush 必须已落定。
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  const flags = []
+  let settled = false
+  const closing = closeBooted([
+    {
+      effectCallbacks: [
+        {
+          disposer: () =>
+            gate.then(() => {
+              flags.push('flushed')
+            }),
+        },
+      ],
+    },
+  ])
+  closing.then(() => {
+    settled = true
+  })
+  await new Promise((resolve) => setTimeout(resolve, 0)) // yield：让微任务队列走完
+  assert.equal(settled, false, 'closeBooted 必须等待未完成的 disposer')
+  release()
+  await closing
+  assert.deepEqual(flags, ['flushed'], 'closeBooted 返回前 disposer 的异步 flush 必须已落定')
+})
 
 test('host smoke suite', async () => {
   try {
@@ -372,6 +461,9 @@ test('host smoke suite', async () => {
 
     console.log('ALL HOST SMOKE TESTS PASSED')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    // 先关闭所有 store 的持久化（flush 线程池 pending 写 + dispose），
+    // 否则残留写与 rmSync 真并发 → Windows ENOTEMPTY（stryker 实测翻车）。
+    await closeBooted(bootedCtxs)
+    await rmDirWithRetry(dir)
   }
 })
