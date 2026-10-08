@@ -12,6 +12,12 @@ DSH 插件：让 DSH agent 用 BeefTV 85 个渠道 manifest 直接生成图片/�
 | `toonflow_media_generate`    | 生成媒体，返回 url/base64/binary                                        |
 | `toonflow_media_set_key`     | 设置某渠道 API Key（持久化到 `$DSH_HOME/toonflow-media/config.json`）   |
 
+## 安装
+
+```bash
+dsh plugin --profile web add dsh-toonflow-media
+```
+
 ## 使用
 
 1. 调用 `toonflow_media_set_key` 设置 API Key（每个渠道一次）。

@@ -69,6 +69,7 @@ const MODULES = {
     display: 'OpenCode 会话头',
     npm: 'dsh-my-opencode-session-header',
   },
+  'dsh-toonflow-media': { module: '媒体生成', display: '媒体生成', npm: 'dsh-toonflow-media' },
 }
 
 const readme = readFileSync(join(root, 'README.md'), 'utf8')
